@@ -129,8 +129,9 @@ def main(args):
                 dicomDset.file_meta.MediaStorageSOPInstanceUID = pydicom.uid.generate_uid()
                 pydicom.dataset.validate_file_meta(dicomDset.file_meta)
                 # FileMetaInformationGroupLength is still missing?
-                dicomDset.is_little_endian                     = True
-                dicomDset.is_implicit_VR                       = False
+                # is_little_endian/is_implicit_VR are deprecated as of pydicom 3.x (removed in
+                # v4.0) in favor of just the Transfer Syntax UID above, which save_as() already
+                # reads to determine both -- setting them explicitly here was always redundant.
 
                 # ----- Update DICOM header from MRD header -----
                 try:
