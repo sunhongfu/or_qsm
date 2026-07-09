@@ -1,26 +1,26 @@
 {
 	"name": "or-qsm-devcontainer",
 
-	// Deliberately builds from the generic docker/Dockerfile (not docker/qsm.dockerfile)
-	// -- this stage is lightweight and native-arm64 on Apple Silicon, so daily coding/
-	// debugging stays fast. docker/qsm.dockerfile's own devcontainer-equivalent stage has
-	// real CUDA torch, but pulling its cu118 wheels requires --platform linux/amd64, which
-	// would force the *entire* devcontainer through QEMU emulation for no benefit (no local
-	// NVIDIA GPU to use those wheels with anyway). postCreate.sh patches in the extra
-	// Python deps this stage lacks (torch/nibabel/scipy). Production-fidelity testing
-	// (CUDA, bet2) uses the separate "Start QSM server (Docker)" task instead, which runs
-	// the real openrecon-qsm:prod image built from docker/qsm.dockerfile.
+	// Builds from docker/qsm.dockerfile's own devcontainer-equivalent stage (not the
+	// generic docker/Dockerfile) -- this host is a native linux/amd64 machine with a real
+	// NVIDIA GPU, so there's no QEMU/Rosetta emulation cost and no ARM/CUDA mismatch: the
+	// CUDA torch stack builds and runs natively, and vendor/bet2's amd64 binary executes
+	// directly too (it doesn't need a COPY into this stage -- it arrives via the workspace
+	// bind-mount below, same fallback path qsm.py already uses for local/notebook testing).
+	// This gives full production fidelity *inside* the devcontainer itself, unlike on an
+	// Apple Silicon Mac (see git history) where this stage would require forcing
+	// --platform linux/amd64 and pay for emulation with no GPU to actually benefit from.
+	// If you reopen this repo's devcontainer on a Mac, swap "target" back to
+	// docker/Dockerfile's "python-mrd-devcontainer" or it'll try to build this CUDA stage
+	// there and be extremely slow (or fail outright for lack of a GPU).
 	"build": {
-		"dockerfile": "../docker/Dockerfile",
-		"target":     "python-mrd-devcontainer",
-		"context":    "../",
-		"cacheFrom":  [
-			"docker.io/kspacekelvin/fire-python-devcon",
-			"docker.io/kspacekelvin/fire-python:buildcache"]
+		"dockerfile": "../docker/qsm.dockerfile",
+		"target":     "python-mrd-cuda-devcontainer",
+		"context":    "../"
 	},
 
-	// Use to enable local GPUs in container if available
-	// "runArgs": [ "--gpus=all" ],
+	// Real GPU available on this host -- see the "build" comment above.
+	"runArgs": [ "--gpus=all" ],
 
 	// Use appPort to "publish" a port to the host machine. Compared to forwardPorts,
 	// appPort allows connections from non-localhost
@@ -28,6 +28,8 @@
 
 	// Bind-mount the example DICOM test dataset (kept out of the repo/workspace to avoid
 	// bloating it -- you'll need your own test DICOMs at this host path, or edit it).
+	// NOTE: this is still the old Mac host path -- update it to a real path on this Linux
+	// GPU machine, or the mount will silently resolve to an empty directory rather than error.
 	// iQSM_Plus itself is NOT bind-mounted separately -- postCreate.sh clones it into
 	// ${containerWorkspaceFolder}/iQSM_Plus instead, i.e. as a gitignored subfolder of the
 	// already-mounted workspace (same layout docker/qsm.dockerfile expects), so it's live
@@ -41,8 +43,8 @@
 		"IQSM_PLUS_DIR": "${containerWorkspaceFolder}/iQSM_Plus"
 	},
 
-	// Sets core.autocrlf, installs torch/nibabel/scipy for the iQSM+ QSM module
-	// (qsm.py), and clones iQSM_Plus + downloads its checkpoints -- see postCreate.sh.
+	// Sets core.autocrlf, installs ipykernel (the only Python dep this stage lacks), and
+	// clones iQSM_Plus + downloads its checkpoints -- see postCreate.sh.
 	"postCreateCommand": "bash .devcontainer/postCreate.sh",
 
 	"customizations": {

@@ -3,7 +3,11 @@
 set -e
 
 git config --global core.autocrlf true
-pip install ipykernel torch nibabel scipy
+
+# torch/nibabel/scipy/matplotlib/pydicom are already baked into
+# docker/qsm.dockerfile's python-mrd-cuda-devcontainer stage (this devcontainer's build
+# target) -- only ipykernel (for RunQSMRecon.ipynb) is missing.
+pip install ipykernel
 
 # Runs with cwd = the workspace folder (VS Code's default for postCreateCommand). Clone
 # iQSM_Plus in-place as a gitignored subfolder here, rather than to a container-only path
