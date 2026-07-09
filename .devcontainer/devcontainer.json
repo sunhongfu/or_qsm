@@ -26,17 +26,18 @@
 	// appPort allows connections from non-localhost
 	"appPort": ["9020:9020"],
 
-	// Bind-mount the example DICOM test dataset (kept out of the repo/workspace to avoid
-	// bloating it -- you'll need your own test DICOMs at this host path, or edit it).
-	// NOTE: this is still the old Mac host path -- update it to a real path on this Linux
-	// GPU machine, or the mount will silently resolve to an empty directory rather than error.
-	// iQSM_Plus itself is NOT bind-mounted separately -- postCreate.sh clones it into
+	// No separate DICOM test-data mount -- test DICOMs live under data/DICOMs_openrecon
+	// (gitignored, populate it yourself), which is already covered by VS Code's default
+	// workspace bind-mount since it's inside the repo. Docker's bind mounts error out hard
+	// on a missing host source path (unlike a plain directory mount), which is why this
+	// used to be a separate top-level mount pointing outside the repo -- moving it inside
+	// avoids that failure mode entirely. RunQSMRecon.ipynb resolves it as a path relative
+	// to the repo root, so this works the same in the devcontainer and natively.
+	//
+	// iQSM_Plus itself is NOT bind-mounted separately either -- postCreate.sh clones it into
 	// ${containerWorkspaceFolder}/iQSM_Plus instead, i.e. as a gitignored subfolder of the
 	// already-mounted workspace (same layout docker/qsm.dockerfile expects), so it's live
 	// editable from the host and picked up automatically without a second mount.
-	"mounts": [
-		"source=/Users/uqhsun8/Downloads/DICOMs_openrecon,target=/opt/data/DICOMs_openrecon,type=bind,consistency=cached"
-	],
 
 	// Tell qsm.py where postCreate.sh clones iQSM_Plus to
 	"containerEnv": {
