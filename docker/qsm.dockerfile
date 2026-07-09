@@ -23,9 +23,14 @@
 # (https://github.com/sunhongfu/iQSM_Plus) directly into this repo as a subfolder --
 # it's gitignored, so this doesn't affect or_qsm's own git history, but it IS included
 # in the Docker build context, so stage 3's `COPY .` picks it up automatically (no
-# --build-context needed):
+# --build-context needed) -- and download its pretrained checkpoints too, since stage 3
+# checks for them and fails the build immediately if they're missing rather than
+# producing an image that only errors at runtime. See readme.md's "Building the Docker
+# image" section for the exact commands (both are plain git/urllib, no extra installs
+# needed):
 #
 #   git clone https://github.com/sunhongfu/iQSM_Plus.git iQSM_Plus
+#   # ... then download iQSM_plus.pth and LoTLayer_chi.pth into iQSM_Plus/checkpoints/
 #
 # This also means `iQSM_Plus/` is covered by the live-edit bind-mount in
 # .vscode/tasks.json's "Start QSM server (Docker)" task -- edit its code, restart the
@@ -139,8 +144,11 @@ RUN apt-get clean && \
     rm -rf /var/lib/apt/lists/* && \
     rm -rf /root/.cache/pip
 
-# ----- 3. Copy deployed code into the devcontainer for deployment -----
-FROM python-mrd-cuda-devcontainer AS python-mrd-runtime
+# ----- 3. Copy deployed code, add the iQSM+ pipeline, configure as an Open Recon app -----
+# (Not split into a separate stage -- nothing targets an intermediate point between here
+# and stage 2, unlike stage 2 itself, which .devcontainer/devcontainer.json's "target"
+# builds up to directly and stops, deliberately without the app code baked in.)
+FROM python-mrd-cuda-devcontainer AS openrecon-qsm
 
 RUN mkdir -p /opt/code/python-ismrmrd-server
 COPY . /opt/code/python-ismrmrd-server
@@ -148,25 +156,25 @@ COPY . /opt/code/python-ismrmrd-server
 RUN find /opt/code/python-ismrmrd-server -name "*.sh" | xargs dos2unix
 RUN find /opt/code/python-ismrmrd-server -name "*.sh" -exec chmod +x {} \;
 
-# ----- 4. Add the iQSM+ pipeline and configure this as an Open Recon app -----
-FROM python-mrd-runtime AS openrecon-qsm
-
-# iQSM_Plus's code already arrived via stage 3's `COPY . /opt/code/python-ismrmrd-server`
-# (it's a subfolder of this repo -- see the header comment for the one-time local clone
-# step). Nested under python-ismrmrd-server's own path (rather than a separate
-# /opt/code/iQSM_Plus, as in earlier versions of this file) specifically so it's also
-# covered by .vscode/tasks.json's live-edit bind-mount, which replaces the whole
+# iQSM_Plus's code already arrived via the `COPY .` above (it's a subfolder of this repo
+# -- see the header comment for the one-time local clone step). Nested under
+# python-ismrmrd-server's own path (rather than a separate /opt/code/iQSM_Plus, as in
+# earlier versions of this file) specifically so it's also covered by
+# .vscode/tasks.json's live-edit bind-mount, which replaces the whole
 # /opt/code/python-ismrmrd-server directory -- a sibling path outside that mount would
 # vanish the moment that task runs.
 ENV IQSM_PLUS_DIR=/opt/code/python-ismrmrd-server/iQSM_Plus
 
-# Pretrained model checkpoints are hosted on Hugging Face
-# (https://huggingface.co/sunhongfu/iQSM_Plus), not part of the git repo -- skip
-# downloading if the local clone already has them (e.g. after running iQSM_Plus's own
-# `run.py --download-checkpoints`), otherwise fetch via plain urllib (already in the
-# Python stdlib, no huggingface_hub dependency needed) mirroring that same script.
-RUN mkdir -p "$IQSM_PLUS_DIR/checkpoints" && \
-    python3 -c "import os, urllib.request; base = 'https://huggingface.co/sunhongfu/iQSM_Plus/resolve/main'; ckpt_dir = os.environ['IQSM_PLUS_DIR'] + '/checkpoints'; [urllib.request.urlretrieve(f'{base}/{n}', f'{ckpt_dir}/{n}') for n in ['iQSM_plus.pth', 'LoTLayer_chi.pth'] if not os.path.exists(f'{ckpt_dir}/{n}')]"
+# Pretrained model checkpoints (https://huggingface.co/sunhongfu/iQSM_Plus) are expected
+# to already be present in the local iQSM_Plus/ clone -- same prerequisite as iQSM_Plus's
+# code itself, per the header comment / readme.md's "Building the Docker image" section
+# -- so they arrived via the `COPY .` above too. Fail loudly here rather than produce an
+# image that silently builds fine and only errors at runtime (CheckpointNotFoundError).
+RUN test -f "$IQSM_PLUS_DIR/checkpoints/iQSM_plus.pth" && \
+    test -f "$IQSM_PLUS_DIR/checkpoints/LoTLayer_chi.pth" || \
+    { echo "ERROR: iQSM_Plus checkpoints not found under $IQSM_PLUS_DIR/checkpoints -- see" \
+           "readme.md's 'Building the Docker image' section (download them before building)." >&2; \
+      exit 1; }
 
 # bet2 (brain extraction), vendored directly in the repo at vendor/bet2/ (bin + its ~15
 # FSL-specific runtime libs, ~118MB) rather than extracted from a Docker Hub image at

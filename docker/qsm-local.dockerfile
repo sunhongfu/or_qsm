@@ -35,10 +35,14 @@ COPY . /opt/code/python-ismrmrd-server
 # equivalent step for the full rationale on why it's nested here, not a sibling path.
 ENV IQSM_PLUS_DIR=/opt/code/python-ismrmrd-server/iQSM_Plus
 
-# Pretrained model checkpoints are hosted on Hugging Face, not part of the git repo --
-# see qsm.dockerfile's equivalent step for the full rationale.
-RUN mkdir -p "$IQSM_PLUS_DIR/checkpoints" && \
-    python3 -c "import os, urllib.request; base = 'https://huggingface.co/sunhongfu/iQSM_Plus/resolve/main'; ckpt_dir = os.environ['IQSM_PLUS_DIR'] + '/checkpoints'; [urllib.request.urlretrieve(f'{base}/{n}', f'{ckpt_dir}/{n}') for n in ['iQSM_plus.pth', 'LoTLayer_chi.pth'] if not os.path.exists(f'{ckpt_dir}/{n}')]"
+# Checkpoints are expected to already be present in the local iQSM_Plus/ clone (same
+# prerequisite as its code) -- see qsm.dockerfile's equivalent step for the full
+# rationale. Fail loudly here rather than produce an image that only errors at runtime.
+RUN test -f "$IQSM_PLUS_DIR/checkpoints/iQSM_plus.pth" && \
+    test -f "$IQSM_PLUS_DIR/checkpoints/LoTLayer_chi.pth" || \
+    { echo "ERROR: iQSM_Plus checkpoints not found under $IQSM_PLUS_DIR/checkpoints -- see" \
+           "readme.md's 'Building the Docker image' section (download them before building)." >&2; \
+      exit 1; }
 
 WORKDIR /opt/code/python-ismrmrd-server
 

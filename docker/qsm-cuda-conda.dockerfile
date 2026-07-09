@@ -115,8 +115,9 @@ RUN apt-get clean && \
     rm -rf /var/lib/apt/lists/* && \
     rm -rf /root/.cache/pip
 
-# ----- 3. Copy deployed code into the devcontainer for deployment -----
-FROM python-mrd-cuda-devcontainer AS python-mrd-runtime
+# ----- 3. Copy deployed code, add the iQSM+ pipeline, configure as an Open Recon app -----
+# (Not split into a separate stage -- see qsm.dockerfile's equivalent step for why.)
+FROM python-mrd-cuda-devcontainer AS openrecon-qsm
 
 RUN mkdir -p /opt/code/python-ismrmrd-server
 COPY . /opt/code/python-ismrmrd-server
@@ -124,17 +125,18 @@ COPY . /opt/code/python-ismrmrd-server
 RUN find /opt/code/python-ismrmrd-server -name "*.sh" | xargs dos2unix
 RUN find /opt/code/python-ismrmrd-server -name "*.sh" -exec chmod +x {} \;
 
-# ----- 4. Add the iQSM+ pipeline and configure this as an Open Recon app -----
-FROM python-mrd-runtime AS openrecon-qsm
-
 # Already arrived via COPY . above (subfolder of this repo) -- see qsm.dockerfile's
 # equivalent step for the full rationale on why it's nested here, not a sibling path.
 ENV IQSM_PLUS_DIR=/opt/code/python-ismrmrd-server/iQSM_Plus
 
-# Pretrained model checkpoints are hosted on Hugging Face, not part of the git repo --
-# see qsm.dockerfile's equivalent step for the full rationale.
-RUN mkdir -p "$IQSM_PLUS_DIR/checkpoints" && \
-    python3 -c "import os, urllib.request; base = 'https://huggingface.co/sunhongfu/iQSM_Plus/resolve/main'; ckpt_dir = os.environ['IQSM_PLUS_DIR'] + '/checkpoints'; [urllib.request.urlretrieve(f'{base}/{n}', f'{ckpt_dir}/{n}') for n in ['iQSM_plus.pth', 'LoTLayer_chi.pth'] if not os.path.exists(f'{ckpt_dir}/{n}')]"
+# Checkpoints are expected to already be present in the local iQSM_Plus/ clone (same
+# prerequisite as its code) -- see qsm.dockerfile's equivalent step for the full
+# rationale. Fail loudly here rather than produce an image that only errors at runtime.
+RUN test -f "$IQSM_PLUS_DIR/checkpoints/iQSM_plus.pth" && \
+    test -f "$IQSM_PLUS_DIR/checkpoints/LoTLayer_chi.pth" || \
+    { echo "ERROR: iQSM_Plus checkpoints not found under $IQSM_PLUS_DIR/checkpoints -- see" \
+           "readme.md's 'Building the Docker image' section (download them before building)." >&2; \
+      exit 1; }
 
 # bet2 (brain extraction), vendored directly in the repo -- see vendor/bet2/README.md
 COPY vendor/bet2 /opt/bet2
