@@ -18,9 +18,10 @@
         //
         // Bind-mounts the repo over /opt/code/python-ismrmrd-server (where the image's own
         // COPY . baked the code in at build time) for live editing -- edit qsm.py, restart
-        // this task, no rebuild needed. iQSM_Plus and bet2 live at separate paths
-        // (/opt/code/iQSM_Plus, /opt/bet2) untouched by this mount, so they stay exactly as
-        // built into the image.
+        // this task, no rebuild needed. iQSM_Plus is nested inside this same repo folder
+        // (see docker/qsm.dockerfile's header comment), so this one mount covers it too --
+        // edit its code the same way, no second mount needed. bet2 lives at a separate path
+        // (/opt/bet2), untouched by this mount, so it stays exactly as built into the image.
         {
             "label": "Start QSM server (Docker)",
             "type": "shell",

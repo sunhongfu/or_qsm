@@ -5,22 +5,26 @@ set -e
 git config --global core.autocrlf true
 pip install ipykernel torch nibabel scipy
 
-# Clone iQSM_Plus directly into the container rather than requiring a host bind-mount
-# (previously: mounts a local /Users/<you>/... path, which only worked on the original
-# author's machine). Users of this devcontainer aren't expected to modify iQSM_Plus's
-# code, so a fresh clone each time the container is (re)created is fine.
-if [ ! -d /opt/iQSM_Plus/.git ]; then
-    git clone https://github.com/sunhongfu/iQSM_Plus.git /opt/iQSM_Plus
+# Runs with cwd = the workspace folder (VS Code's default for postCreateCommand). Clone
+# iQSM_Plus in-place as a gitignored subfolder here, rather than to a container-only path
+# like /opt/iQSM_Plus -- since the workspace folder is itself the live host bind-mount,
+# this is the exact same layout docker/qsm.dockerfile expects (see its header comment),
+# so the clone is reusable across both the devcontainer and a plain `docker build`, is
+# live-editable from the host, and only needs to happen once (not on every re-create).
+export IQSM_PLUS_DIR="$(pwd)/iQSM_Plus"
+if [ ! -d "$IQSM_PLUS_DIR/.git" ]; then
+    git clone https://github.com/sunhongfu/iQSM_Plus.git "$IQSM_PLUS_DIR"
 fi
 
 # Pretrained model checkpoints are hosted on Hugging Face, not committed to the git repo
 # -- mirrors iQSM_Plus's own `run.py --download-checkpoints`.
-mkdir -p /opt/iQSM_Plus/checkpoints
+mkdir -p "$IQSM_PLUS_DIR/checkpoints"
 python3 -c "
 import os, urllib.request
 base = 'https://huggingface.co/sunhongfu/iQSM_Plus/resolve/main'
+ckpt_dir = os.path.join(os.environ['IQSM_PLUS_DIR'], 'checkpoints')
 for name in ['iQSM_plus.pth', 'LoTLayer_chi.pth']:
-    local = f'/opt/iQSM_Plus/checkpoints/{name}'
+    local = os.path.join(ckpt_dir, name)
     if os.path.exists(local):
         print(f'{name} already present, skipping.')
     else:

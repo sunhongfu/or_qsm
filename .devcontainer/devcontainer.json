@@ -1,6 +1,15 @@
 {
-	"name": "python-ismrmrd-server-devcon",
+	"name": "or-qsm-devcontainer",
 
+	// Deliberately builds from the generic docker/Dockerfile (not docker/qsm.dockerfile)
+	// -- this stage is lightweight and native-arm64 on Apple Silicon, so daily coding/
+	// debugging stays fast. docker/qsm.dockerfile's own devcontainer-equivalent stage has
+	// real CUDA torch, but pulling its cu118 wheels requires --platform linux/amd64, which
+	// would force the *entire* devcontainer through QEMU emulation for no benefit (no local
+	// NVIDIA GPU to use those wheels with anyway). postCreate.sh patches in the extra
+	// Python deps this stage lacks (torch/nibabel/scipy). Production-fidelity testing
+	// (CUDA, bet2) uses the separate "Start QSM server (Docker)" task instead, which runs
+	// the real openrecon-qsm:prod image built from docker/qsm.dockerfile.
 	"build": {
 		"dockerfile": "../docker/Dockerfile",
 		"target":     "python-mrd-devcontainer",
@@ -19,16 +28,17 @@
 
 	// Bind-mount the example DICOM test dataset (kept out of the repo/workspace to avoid
 	// bloating it -- you'll need your own test DICOMs at this host path, or edit it).
-	// iQSM_Plus itself is NOT bind-mounted -- postCreate.sh clones it directly into the
-	// container instead, so this devcontainer works out of the box for anyone, not just
-	// on the original author's machine.
+	// iQSM_Plus itself is NOT bind-mounted separately -- postCreate.sh clones it into
+	// ${containerWorkspaceFolder}/iQSM_Plus instead, i.e. as a gitignored subfolder of the
+	// already-mounted workspace (same layout docker/qsm.dockerfile expects), so it's live
+	// editable from the host and picked up automatically without a second mount.
 	"mounts": [
 		"source=/Users/uqhsun8/Downloads/DICOMs_openrecon,target=/opt/data/DICOMs_openrecon,type=bind,consistency=cached"
 	],
 
 	// Tell qsm.py where postCreate.sh clones iQSM_Plus to
 	"containerEnv": {
-		"IQSM_PLUS_DIR": "/opt/iQSM_Plus"
+		"IQSM_PLUS_DIR": "${containerWorkspaceFolder}/iQSM_Plus"
 	},
 
 	// Sets core.autocrlf, installs torch/nibabel/scipy for the iQSM+ QSM module

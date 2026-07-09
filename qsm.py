@@ -28,17 +28,15 @@ from time import perf_counter
 debugFolder = "/tmp/share/debug"
 
 # The iQSM+ pipeline (inference.py, models/, checkpoints/) is kept as its own
-# repo/checkout rather than copied into this one. Its location differs by
-# context -- baked into the Docker image at /opt/code/iQSM_Plus, bind-mounted
-# into the devcontainer at /opt/iQSM_Plus, or a local checkout when running
-# from a plain venv on the host -- so try IQSM_PLUS_DIR first (if set), then
-# fall back to the other known locations, rather than requiring the launch
-# config/environment to be edited per-context.
+# repo/checkout, cloned as a gitignored subfolder of this repo rather than tracked in
+# it (see readme.md's "Building the Docker image" section) -- so try IQSM_PLUS_DIR
+# first (if set, e.g. by the devcontainer's containerEnv), then fall back to where it
+# ends up in the Docker image / when running from a plain venv on the host, rather than
+# requiring the launch config/environment to be edited per-context.
 _IQSM_PLUS_CANDIDATES = [
     os.environ.get("IQSM_PLUS_DIR"),
-    "/opt/code/iQSM_Plus",                              # baked into the Docker image
-    "/opt/iQSM_Plus",                                   # devcontainer bind mount
-    "/Users/uqhsun8/Documents/repos/iQSM_Plus",         # local host checkout
+    "/opt/code/python-ismrmrd-server/iQSM_Plus",        # baked into the Docker image
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "iQSM_Plus"),  # local checkout, native/no-docker
 ]
 IQSM_PLUS_DIR = next((p for p in _IQSM_PLUS_CANDIDATES if p and os.path.isdir(p)), None)
 if IQSM_PLUS_DIR and IQSM_PLUS_DIR not in sys.path:
@@ -556,13 +554,6 @@ def process_qsm(buffer, connection, config, metadata):
                          (IQSM_PLUS_DIR, e))
 
     affine = np.diag(voxel_mm + [1.0])
-    phase_nii_path = os.path.join(debugFolder, "phase.nii.gz")
-    mag_nii_path   = os.path.join(debugFolder, "mag.nii.gz")
-    nib.save(nib.Nifti1Image(phaseVol, affine), phase_nii_path)
-    nib.save(nib.Nifti1Image(magVol,   affine), mag_nii_path)
-    logging.info("Wrote input NIfTIs: %s (%.1f MB), %s (%.1f MB)",
-                 phase_nii_path, os.path.getsize(phase_nii_path) / (1024 ** 2),
-                 mag_nii_path, os.path.getsize(mag_nii_path) / (1024 ** 2))
 
     # ------------------------------------------------------------------
     # Optional brain extraction (FSL's bet2), toggled by the 'Brain Extraction (BET)'
@@ -578,6 +569,15 @@ def process_qsm(buffer, connection, config, metadata):
     else:
         logging.info("Brain extraction disabled via 'brainextraction' UI parameter")
 
+    # run_iqsm_plus() processes a single echo per call -- multi-echo combination
+    # is handled externally by the caller, exactly as iQSM_Plus's own run.py /
+    # app.py do (see inference.py's docstring; this API changed from an internal
+    # te_values=list loop to this per-echo form upstream). Model weights are
+    # cached globally inside get_model() (keyed by device), so looping here does
+    # NOT reload them from disk each iteration -- only the per-echo forward pass
+    # itself repeats, which is unavoidable (the network has no cross-echo
+    # batching), so this costs nothing extra versus the old internal-loop API.
+    #
     # run_iqsm_plus() is opaque to us (lives in the separate iQSM_Plus checkout,
     # not this repo) and was observed to run for 9+ minutes with zero log output
     # before the container was killed by the kernel OOM killer (exit code 137,
@@ -586,27 +586,42 @@ def process_qsm(buffer, connection, config, metadata):
     # background thread every few seconds *during* the call, so the last few
     # heartbeats before a future kill will show how memory was trending.
     inferenceStart = perf_counter()
+    qsmVolumes = []
     try:
         with _MemoryHeartbeat("during run_iqsm_plus"):
-            qsm_nii_path = run_iqsm_plus(
-                phase_nii_path=phase_nii_path,
-                te_values=te_sec,
-                mag_nii_path=mag_nii_path,
-                mask_nii_path=maskPath,
-                voxel_size=voxel_mm,
-                b0_dir=b0_dir,
-                b0=b0_tesla,
-                output_dir=debugFolder,
-            )
+            for echo in range(nEchoes):
+                echoPhasePath = os.path.join(debugFolder, "phase_echo%d.nii.gz" % echo)
+                echoMagPath   = os.path.join(debugFolder, "mag_echo%d.nii.gz" % echo)
+                nib.save(nib.Nifti1Image(phaseVol[..., echo], affine), echoPhasePath)
+                nib.save(nib.Nifti1Image(magVol[..., echo],   affine), echoMagPath)
+
+                logging.info("Running iQSM+ on echo %d/%d (TE=%.4f s)", echo + 1, nEchoes, te_sec[echo])
+                echoQsmPath = run_iqsm_plus(
+                    phase_nii_path=echoPhasePath,
+                    te=float(te_sec[echo]),
+                    mag_nii_path=echoMagPath,
+                    mask_nii_path=maskPath,
+                    voxel_size=voxel_mm,
+                    b0_dir=b0_dir,
+                    b0=b0_tesla,
+                    output_dir=os.path.join(debugFolder, "echo%d_output" % echo),
+                )
+                qsmVolumes.append(nib.load(echoQsmPath).get_fdata(dtype=np.float32))
     except CheckpointNotFoundError as e:
         raise Exception("iQSM+ model checkpoints not found: %s" % e)
     except Exception:
         logging.error("run_iqsm_plus() raised after %.1f s:\n%s",
                       perf_counter() - inferenceStart, traceback.format_exc())
         raise
-    logging.info("run_iqsm_plus() completed in %.1f s", perf_counter() - inferenceStart)
+    logging.info("run_iqsm_plus() completed %d echo(es) in %.1f s", nEchoes, perf_counter() - inferenceStart)
 
-    qsmVol = nib.load(qsm_nii_path).get_fdata().astype(np.float32)
+    # Magnitude x TE^2 weighted average across echoes -- mirrors iQSM_Plus's own
+    # run.py:_run_multi_echo() combiner exactly.
+    qsmStack = np.stack(qsmVolumes, axis=-1)
+    teWeights = (magVol * np.array(te_sec, dtype=np.float32).reshape(1, 1, 1, -1)) ** 2
+    teWeightsSum = teWeights.sum(axis=-1)
+    teWeightsSum[teWeightsSum == 0] = 1.0
+    qsmVol = ((teWeights * qsmStack).sum(axis=-1) / teWeightsSum).astype(np.float32)
     np.save(os.path.join(debugFolder, "qsmVol.npy"), qsmVol)
 
     # ------------------------------------------------------------------

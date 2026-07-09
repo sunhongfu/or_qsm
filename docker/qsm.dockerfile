@@ -19,17 +19,22 @@
 # that file instead (same commands, just swap -f) and nothing else needs to
 # change.
 #
-# Build from the or_qsm repo folder. iQSM_Plus (https://github.com/sunhongfu/iQSM_Plus)
-# is cloned directly during the build (stage 4 below) -- no local checkout or
-# --build-context needed. Users of this Dockerfile aren't expected to modify
-# iQSM_Plus's code, so there's no benefit to requiring one; this also removes the only
-# extra manual setup step to building this image at all.
+# Build from the or_qsm repo folder. Step 1 (one-time): clone iQSM_Plus
+# (https://github.com/sunhongfu/iQSM_Plus) directly into this repo as a subfolder --
+# it's gitignored, so this doesn't affect or_qsm's own git history, but it IS included
+# in the Docker build context, so stage 3's `COPY .` picks it up automatically (no
+# --build-context needed):
 #
-# --platform linux/amd64 is required explicitly on Apple Silicon hosts:
-# python:3.12-slim (unlike the old CUDA base) publishes a native arm64
-# manifest, so without this flag Docker silently builds for arm64 and the
-# CUDA-only torch wheels fail to resolve ("no matching distribution") with no
-# obvious reason why:
+#   git clone https://github.com/sunhongfu/iQSM_Plus.git iQSM_Plus
+#
+# This also means `iQSM_Plus/` is covered by the live-edit bind-mount in
+# .vscode/tasks.json's "Start QSM server (Docker)" task -- edit its code, restart the
+# task, no rebuild needed, same as qsm.py.
+#
+# Step 2: build. --platform linux/amd64 is required explicitly on Apple Silicon hosts:
+# python:3.12-slim (unlike the old CUDA base) publishes a native arm64 manifest, so
+# without this flag Docker silently builds for arm64 and the CUDA-only torch wheels
+# fail to resolve ("no matching distribution") with no obvious reason why:
 #
 #   docker build --platform linux/amd64 -f docker/qsm.dockerfile \
 #       -t openrecon-qsm:prod .
@@ -146,20 +151,22 @@ RUN find /opt/code/python-ismrmrd-server -name "*.sh" -exec chmod +x {} \;
 # ----- 4. Add the iQSM+ pipeline and configure this as an Open Recon app -----
 FROM python-mrd-runtime AS openrecon-qsm
 
-# Cloned directly rather than requiring a local checkout / --build-context (see header
-# comment) -- users of this Dockerfile aren't expected to modify iQSM_Plus's code.
-# Unpinned (tracks the default branch) since both repos are maintained by the same
-# author; pin to a specific commit/tag here if build reproducibility ever matters more
-# than automatically picking up upstream iQSM_Plus changes.
-RUN git clone https://github.com/sunhongfu/iQSM_Plus.git /opt/code/iQSM_Plus
-ENV IQSM_PLUS_DIR=/opt/code/iQSM_Plus
+# iQSM_Plus's code already arrived via stage 3's `COPY . /opt/code/python-ismrmrd-server`
+# (it's a subfolder of this repo -- see the header comment for the one-time local clone
+# step). Nested under python-ismrmrd-server's own path (rather than a separate
+# /opt/code/iQSM_Plus, as in earlier versions of this file) specifically so it's also
+# covered by .vscode/tasks.json's live-edit bind-mount, which replaces the whole
+# /opt/code/python-ismrmrd-server directory -- a sibling path outside that mount would
+# vanish the moment that task runs.
+ENV IQSM_PLUS_DIR=/opt/code/python-ismrmrd-server/iQSM_Plus
 
 # Pretrained model checkpoints are hosted on Hugging Face
-# (https://huggingface.co/sunhongfu/iQSM_Plus), not committed to the git repo -- mirrors
-# iQSM_Plus's own `run.py --download-checkpoints`, using plain urllib (already in the
-# Python stdlib) rather than adding huggingface_hub as a new dependency.
-RUN mkdir -p /opt/code/iQSM_Plus/checkpoints && \
-    python3 -c "import urllib.request; base = 'https://huggingface.co/sunhongfu/iQSM_Plus/resolve/main'; [urllib.request.urlretrieve(f'{base}/{n}', f'/opt/code/iQSM_Plus/checkpoints/{n}') for n in ['iQSM_plus.pth', 'LoTLayer_chi.pth']]"
+# (https://huggingface.co/sunhongfu/iQSM_Plus), not part of the git repo -- skip
+# downloading if the local clone already has them (e.g. after running iQSM_Plus's own
+# `run.py --download-checkpoints`), otherwise fetch via plain urllib (already in the
+# Python stdlib, no huggingface_hub dependency needed) mirroring that same script.
+RUN mkdir -p "$IQSM_PLUS_DIR/checkpoints" && \
+    python3 -c "import os, urllib.request; base = 'https://huggingface.co/sunhongfu/iQSM_Plus/resolve/main'; ckpt_dir = os.environ['IQSM_PLUS_DIR'] + '/checkpoints'; [urllib.request.urlretrieve(f'{base}/{n}', f'{ckpt_dir}/{n}') for n in ['iQSM_plus.pth', 'LoTLayer_chi.pth'] if not os.path.exists(f'{ckpt_dir}/{n}')]"
 
 # bet2 (brain extraction), vendored directly in the repo at vendor/bet2/ (bin + its ~15
 # FSL-specific runtime libs, ~118MB) rather than extracted from a Docker Hub image at

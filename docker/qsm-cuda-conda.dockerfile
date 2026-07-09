@@ -14,9 +14,14 @@
 # PyTorch base + compiled ismrmrd/siemens_to_ismrmrd + the python-ismrmrd-server
 # code) with the iQSM+ pipeline and the qsm.py module.
 #
-# Build from the or_qsm repo folder. iQSM_Plus (https://github.com/sunhongfu/iQSM_Plus)
-# is cloned directly during the build -- no local checkout or --build-context needed:
+# Build from the or_qsm repo folder. Step 1 (one-time): clone iQSM_Plus
+# (https://github.com/sunhongfu/iQSM_Plus) into this repo as a subfolder (gitignored,
+# but included in the Docker build context) -- see qsm.dockerfile's header comment for
+# the full rationale:
 #
+#   git clone https://github.com/sunhongfu/iQSM_Plus.git iQSM_Plus
+#
+# Step 2:
 #   docker build -f docker/qsm-cuda-conda.dockerfile \
 #       -t openrecon-qsm:prod .
 #
@@ -122,14 +127,14 @@ RUN find /opt/code/python-ismrmrd-server -name "*.sh" -exec chmod +x {} \;
 # ----- 4. Add the iQSM+ pipeline and configure this as an Open Recon app -----
 FROM python-mrd-runtime AS openrecon-qsm
 
-# Cloned directly -- see qsm.dockerfile's equivalent step for the full rationale.
-RUN git clone https://github.com/sunhongfu/iQSM_Plus.git /opt/code/iQSM_Plus
-ENV IQSM_PLUS_DIR=/opt/code/iQSM_Plus
+# Already arrived via COPY . above (subfolder of this repo) -- see qsm.dockerfile's
+# equivalent step for the full rationale on why it's nested here, not a sibling path.
+ENV IQSM_PLUS_DIR=/opt/code/python-ismrmrd-server/iQSM_Plus
 
-# Pretrained model checkpoints are hosted on Hugging Face, not committed to the git repo
-# -- see qsm.dockerfile's equivalent step for the full rationale.
-RUN mkdir -p /opt/code/iQSM_Plus/checkpoints && \
-    python3 -c "import urllib.request; base = 'https://huggingface.co/sunhongfu/iQSM_Plus/resolve/main'; [urllib.request.urlretrieve(f'{base}/{n}', f'/opt/code/iQSM_Plus/checkpoints/{n}') for n in ['iQSM_plus.pth', 'LoTLayer_chi.pth']]"
+# Pretrained model checkpoints are hosted on Hugging Face, not part of the git repo --
+# see qsm.dockerfile's equivalent step for the full rationale.
+RUN mkdir -p "$IQSM_PLUS_DIR/checkpoints" && \
+    python3 -c "import os, urllib.request; base = 'https://huggingface.co/sunhongfu/iQSM_Plus/resolve/main'; ckpt_dir = os.environ['IQSM_PLUS_DIR'] + '/checkpoints'; [urllib.request.urlretrieve(f'{base}/{n}', f'{ckpt_dir}/{n}') for n in ['iQSM_plus.pth', 'LoTLayer_chi.pth'] if not os.path.exists(f'{ckpt_dir}/{n}')]"
 
 # bet2 (brain extraction), vendored directly in the repo -- see vendor/bet2/README.md
 COPY vendor/bet2 /opt/bet2

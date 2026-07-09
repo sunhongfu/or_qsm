@@ -23,13 +23,14 @@ A Siemens [Open Recon](https://www.siemens-healthineers.com/magnetic-resonance-i
 2. Siemens' Emitter functor streams the reconstructed magnitude/phase images to the container over MRD ([qsm.py](qsm.py)'s `process()`).
 3. [qsm.py](qsm.py) buffers every image (QSM needs the whole 3D multi-echo volume, not one image at a time -- see the module's own docstring), then:
    - Optionally runs FSL's `bet2` on the first echo to get a brain mask (toggle: [UI parameters](#ui-parameters)).
-   - Calls into [iQSM_Plus](https://github.com/sunhongfu/iQSM_Plus) (`run_iqsm_plus()`, kept as a separate checkout, not copied into this repo) to run the actual deep-learning reconstruction.
+   - Calls into [iQSM_Plus](https://github.com/sunhongfu/iQSM_Plus) (`run_iqsm_plus()`, cloned locally as a gitignored subfolder of this repo -- see [Building the Docker image](#building-the-docker-image) -- rather than tracked in this repo's own git history) to run the actual deep-learning reconstruction.
    - Quantizes the resulting susceptibility map (ppm) into uint16 DICOM pixel data with a fixed rescale slope/intercept.
 4. Both the QSM map (`image_series_index=100`) **and** the original acquisition series are sent back unmodified -- Open Recon only saves/displays images an app explicitly returns, so passing through the originals is what keeps them from being silently discarded.
 
 ## Repository layout
 
 - [qsm.py](qsm.py) -- the QSM reconstruction module itself (the `config` this server runs; see `--defaultConfig=qsm` in the Dockerfile `CMD`).
+- `iQSM_Plus/` -- **not tracked in this repo** (gitignored); a local clone of [sunhongfu/iQSM_Plus](https://github.com/sunhongfu/iQSM_Plus) that you create yourself before building -- see [Building the Docker image](#building-the-docker-image).
 - [vendor/bet2/](vendor/bet2/) -- FSL's `bet2` binary + its ~15 runtime shared libraries, vendored directly (not a full FSL install).
 - [docker/qsm.dockerfile](docker/qsm.dockerfile) -- builds the deployable image. `docker/qsm-cuda-conda.dockerfile` is kept as a rollback to the original conda-based build (larger, ~8.7GB vs ~6.3GB) if the slim pip-based one ever misbehaves.
 - [docker/build_openrecon_package.py](docker/build_openrecon_package.py) -- packages the built image + `docs.pdf` into the `.zip` Open Recon expects for scanner installation.
@@ -39,12 +40,22 @@ A Siemens [Open Recon](https://www.siemens-healthineers.com/magnetic-resonance-i
 
 ## Building the Docker image
 
+**Step 1 (one-time):** clone [iQSM_Plus](https://github.com/sunhongfu/iQSM_Plus) (model/inference code) into this repo as a subfolder. It's gitignored, so this doesn't affect this repo's own git history, but it IS included in the Docker build context, so the build picks it up automatically -- no `--build-context` needed:
+
+```bash
+git clone https://github.com/sunhongfu/iQSM_Plus.git iQSM_Plus
+```
+
+This also means `iQSM_Plus/` is covered by the live-edit bind-mount in `.vscode/tasks.json`'s "Start QSM server (Docker)" task -- edit its code, restart the task, no rebuild needed, same as `qsm.py`.
+
+**Step 2:** build.
+
 ```bash
 docker build --platform linux/amd64 -f docker/qsm.dockerfile \
     -t openrecon-qsm:prod .
 ```
 
-No other setup needed -- [iQSM_Plus](https://github.com/sunhongfu/iQSM_Plus) (model/inference code) is cloned directly during the build, and its pretrained checkpoints are downloaded from [Hugging Face](https://huggingface.co/sunhongfu/iQSM_Plus) (they're not committed to the iQSM_Plus git repo itself). Users of this Dockerfile aren't expected to modify iQSM_Plus's code, so there's no need for a separately-managed local checkout.
+Pretrained checkpoints are downloaded from [Hugging Face](https://huggingface.co/sunhongfu/iQSM_Plus) during the build (they're not committed to the iQSM_Plus git repo itself) -- skipped automatically if your local clone already has them (e.g. after running iQSM_Plus's own `run.py --download-checkpoints`).
 
 `--platform linux/amd64` is required on Apple Silicon: the base image (`python:3.12-slim`) publishes a native arm64 manifest, so without this flag Docker silently builds for arm64 and the CUDA-only torch wheels fail to resolve with a confusing "no matching distribution" error.
 
@@ -93,4 +104,4 @@ Per `qsm_json_ui.json`'s `reconstruction` section: GPU optional but supported (`
 
 ## License
 
-This repository's own code is MIT licensed (inherited from the upstream framework, see [LICENSE](LICENSE)). `vendor/bet2/` is FSL's Brain Extraction Tool, separately licensed -- see [vendor/bet2/README.md](vendor/bet2/README.md). The iQSM+ model weights are a separate checkout ([sunhongfu/iQSM_Plus](https://github.com/sunhongfu/iQSM_Plus)) with their own license terms, not distributed as part of this repo.
+This repository's own code is MIT licensed (inherited from the upstream framework, see [LICENSE](LICENSE)). `vendor/bet2/` is FSL's Brain Extraction Tool, separately licensed -- see [vendor/bet2/README.md](vendor/bet2/README.md). The iQSM+ model weights are a separate checkout ([sunhongfu/iQSM_Plus](https://github.com/sunhongfu/iQSM_Plus)) with their own license terms, not tracked in this repo's git history.
