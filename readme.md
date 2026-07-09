@@ -123,12 +123,15 @@ Put a sample multi-echo GRE DICOM series (magnitude + phase) under `data/dicoms/
 converting it, running a reconstruction, and displaying the result. Two ways to run the server
 for it:
 
-- **Devcontainer** ("Dev Containers: Reopen in Container") -- a ready Python environment
-  matching this project's dependencies, no local install needed. See
-  [.devcontainer/devcontainer.json](.devcontainer/devcontainer.json)'s own comments for exactly
-  what it builds from and why -- this varies by host (e.g. a lightweight arm64-native stage on
-  Apple Silicon vs. the full CUDA stage, with real `bet2`/GPU support, on a Linux GPU machine).
-  Once open, use the **"Start QSM server"** launch config inside it.
+- **Devcontainer** ("Dev Containers: Reopen in Container", recommended) -- builds all the way to
+  `qsm.dockerfile`'s final `openrecon-qsm` stage (forcing `--platform linux/amd64`) and
+  live-mounts this repo over the image's own code, so it's equivalent to running the real
+  production image with live editing -- `bet2` and GPU both work directly inside it, on every
+  host. See [.devcontainer/devcontainer.json](.devcontainer/devcontainer.json)'s own comments for
+  the full rationale and the trade-off it makes (on Apple Silicon, the *entire* devcontainer runs
+  under amd64 emulation, not just `bet2` calls -- slower pip installs, Python startup, every
+  terminal command, in exchange for not needing a separate Docker-based option day-to-day). Once
+  open, use the **"Start QSM server"** launch config inside it.
 - **"Start QSM server" launch config** (Run and Debug tab, native -- no Docker/devcontainer at
   all) -- fastest to start, but requires a local `.venv` with this project's dependencies already
   installed. Cannot run `bet2` on a non-linux/amd64 host (e.g. a Mac): it's a linux/amd64 ELF
@@ -137,15 +140,12 @@ for it:
 
 Both listen on the same port (9020), so notebook cells don't need to change either way.
 
-**Testing `bet2`:** neither option above can run it on a non-linux/amd64 host (e.g. Apple
-Silicon) -- the devcontainer would need `target` swapped to `qsm.dockerfile`'s CUDA stage *and*
-force `--platform linux/amd64`, which still fails under Rosetta emulation, not just runs slowly.
-On a native linux/amd64 host (e.g. a Linux GPU machine) with `devcontainer.json` pointed at that
-CUDA stage, both options above already run `bet2` directly -- no extra step needed. Everywhere
-else, use the **"Start QSM server (Docker)" task** in `.vscode/tasks.json` instead, which runs
-the actual `openrecon-qsm:prod` image (also useful for verifying the exact final Docker stage
-right before [packaging](#packaging-for-scanner-deployment), since the devcontainer deliberately
-stops one stage earlier and never runs it).
+There's also a **"Start QSM server (Docker)" task** in `.vscode/tasks.json` that runs the
+already-built, tagged `openrecon-qsm:prod` image directly (`docker run`, no devcontainer
+rebuild/reopen needed) with the same live bind-mount -- handy for a quick server without
+switching VS Code's environment, or for testing the *exact* image that's about to be
+[packaged](#packaging-for-scanner-deployment), as opposed to the devcontainer's own separately
+managed build of the same stage.
 
 To simulate a specific UI parameter value from `client.py` without a real scanner/Open Recon UI: create a `<config>.json` sidecar file (e.g. `qsm.json`) in the working directory --
 ```json
