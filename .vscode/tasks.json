@@ -15,6 +15,12 @@
         // `args.port = 9020` works unchanged regardless of which server variant is
         // running -- just start this task instead of the "Start QSM server" launch
         // config. Requires openrecon-qsm:prod to already be built (see docker/qsm.dockerfile).
+        //
+        // Bind-mounts the repo over /opt/code/python-ismrmrd-server (where the image's own
+        // COPY . baked the code in at build time) for live editing -- edit qsm.py, restart
+        // this task, no rebuild needed. iQSM_Plus and bet2 live at separate paths
+        // (/opt/code/iQSM_Plus, /opt/bet2) untouched by this mount, so they stay exactly as
+        // built into the image.
         {
             "label": "Start QSM server (Docker)",
             "type": "shell",
@@ -23,6 +29,7 @@
                 "run", "--rm", "--platform", "linux/amd64",
                 "-p", "9020:9002",
                 "--name", "qsm-docker-server",
+                "-v", "${workspaceFolder}:/opt/code/python-ismrmrd-server",
                 "openrecon-qsm:prod"
             ],
             "isBackground": true,
