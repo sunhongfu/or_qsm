@@ -2,10 +2,9 @@
 # without an NVIDIA GPU (e.g. a laptop). For actual scanner deployment, use
 # docker/qsm.dockerfile instead, which is CUDA-enabled for the MaRS GPU.
 #
-# Build from the python-ismrmrd-server folder:
-#   docker build -f docker/qsm-cpu.dockerfile \
-#       --build-context iqsm_plus=/Users/uqhsun8/Documents/repos/iQSM_Plus \
-#       -t openrecon-qsm:cpu .
+# Build from the or_qsm repo folder -- no other setup needed, iQSM_Plus is cloned
+# directly during the build (see below):
+#   docker build -f docker/qsm-cpu.dockerfile -t openrecon-qsm:cpu .
 
 FROM kspacekelvin/fire-python:latest AS openrecon-qsm-cpu
 
@@ -19,8 +18,17 @@ FROM kspacekelvin/fire-python:latest AS openrecon-qsm-cpu
 RUN pip3 install --no-cache-dir --upgrade torch --index-url https://download.pytorch.org/whl/cpu
 RUN pip3 install --no-cache-dir --upgrade nibabel scipy matplotlib h5py
 
-COPY --from=iqsm_plus . /opt/code/iQSM_Plus
+# Cloned directly rather than requiring a local checkout / --build-context -- see
+# qsm.dockerfile's equivalent step for the full rationale. git may not be present in
+# the base fire-python image, hence the explicit install.
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+RUN git clone https://github.com/sunhongfu/iQSM_Plus.git /opt/code/iQSM_Plus
 ENV IQSM_PLUS_DIR=/opt/code/iQSM_Plus
+
+# Pretrained model checkpoints are hosted on Hugging Face, not committed to the git repo
+# -- see qsm.dockerfile's equivalent step for the full rationale.
+RUN mkdir -p /opt/code/iQSM_Plus/checkpoints && \
+    python3 -c "import urllib.request; base = 'https://huggingface.co/sunhongfu/iQSM_Plus/resolve/main'; [urllib.request.urlretrieve(f'{base}/{n}', f'/opt/code/iQSM_Plus/checkpoints/{n}') for n in ['iQSM_plus.pth', 'LoTLayer_chi.pth']]"
 
 COPY qsm.py /opt/code/python-ismrmrd-server/qsm.py
 

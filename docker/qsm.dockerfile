@@ -19,16 +19,19 @@
 # that file instead (same commands, just swap -f) and nothing else needs to
 # change.
 #
-# Build from the python-ismrmrd-server folder, passing the iQSM_Plus checkout
-# as a separate named build context (requires Docker Buildx, included with
-# modern Docker Desktop). --platform linux/amd64 is required explicitly on
-# Apple Silicon hosts: python:3.12-slim (unlike the old CUDA base) publishes a
-# native arm64 manifest, so without this flag Docker silently builds for
-# arm64 and the CUDA-only torch wheels fail to resolve ("no matching
-# distribution") with no obvious reason why:
+# Build from the or_qsm repo folder. iQSM_Plus (https://github.com/sunhongfu/iQSM_Plus)
+# is cloned directly during the build (stage 4 below) -- no local checkout or
+# --build-context needed. Users of this Dockerfile aren't expected to modify
+# iQSM_Plus's code, so there's no benefit to requiring one; this also removes the only
+# extra manual setup step to building this image at all.
+#
+# --platform linux/amd64 is required explicitly on Apple Silicon hosts:
+# python:3.12-slim (unlike the old CUDA base) publishes a native arm64
+# manifest, so without this flag Docker silently builds for arm64 and the
+# CUDA-only torch wheels fail to resolve ("no matching distribution") with no
+# obvious reason why:
 #
 #   docker build --platform linux/amd64 -f docker/qsm.dockerfile \
-#       --build-context iqsm_plus=/Users/uqhsun8/Documents/repos/iQSM_Plus \
 #       -t openrecon-qsm:prod .
 #
 # Troubleshooting "context deadline exceeded" / stuck on "load metadata for
@@ -39,9 +42,6 @@
 # same image. First retry normally; if it keeps failing, force the classic
 # builder (which checks the local image store first) as a workaround:
 #   DOCKER_BUILDKIT=0 docker build -f docker/qsm.dockerfile ...
-# Note the classic builder does NOT support --build-context, so you'll also
-# need to temporarily copy the needed iQSM_Plus files into a subfolder of this
-# repo and swap the `COPY --from=iqsm_plus` line for a plain `COPY <subfolder>`.
 
 # ----- 1. First stage to build ismrmrd and siemens_to_ismrmrd -----
 FROM python:3.12.0-slim AS mrd_converter
@@ -146,10 +146,20 @@ RUN find /opt/code/python-ismrmrd-server -name "*.sh" -exec chmod +x {} \;
 # ----- 4. Add the iQSM+ pipeline and configure this as an Open Recon app -----
 FROM python-mrd-runtime AS openrecon-qsm
 
-# Requires the iQSM_Plus repo to be passed in as a separate build context named
-# "iqsm_plus" (see the docker build command in the header comment above)
-COPY --from=iqsm_plus . /opt/code/iQSM_Plus
+# Cloned directly rather than requiring a local checkout / --build-context (see header
+# comment) -- users of this Dockerfile aren't expected to modify iQSM_Plus's code.
+# Unpinned (tracks the default branch) since both repos are maintained by the same
+# author; pin to a specific commit/tag here if build reproducibility ever matters more
+# than automatically picking up upstream iQSM_Plus changes.
+RUN git clone https://github.com/sunhongfu/iQSM_Plus.git /opt/code/iQSM_Plus
 ENV IQSM_PLUS_DIR=/opt/code/iQSM_Plus
+
+# Pretrained model checkpoints are hosted on Hugging Face
+# (https://huggingface.co/sunhongfu/iQSM_Plus), not committed to the git repo -- mirrors
+# iQSM_Plus's own `run.py --download-checkpoints`, using plain urllib (already in the
+# Python stdlib) rather than adding huggingface_hub as a new dependency.
+RUN mkdir -p /opt/code/iQSM_Plus/checkpoints && \
+    python3 -c "import urllib.request; base = 'https://huggingface.co/sunhongfu/iQSM_Plus/resolve/main'; [urllib.request.urlretrieve(f'{base}/{n}', f'/opt/code/iQSM_Plus/checkpoints/{n}') for n in ['iQSM_plus.pth', 'LoTLayer_chi.pth']]"
 
 # bet2 (brain extraction), vendored directly in the repo at vendor/bet2/ (bin + its ~15
 # FSL-specific runtime libs, ~118MB) rather than extracted from a Docker Hub image at

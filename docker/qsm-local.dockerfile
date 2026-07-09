@@ -4,10 +4,10 @@
 # a local devcontainer image (e.g. built by VS Code's Dev Containers extension)
 # already has ismrmrd/matplotlib/pydicom installed.
 #
-# Build from the python-ismrmrd-server folder:
+# Build from the or_qsm repo folder -- no other setup needed, iQSM_Plus is cloned
+# directly during the build (see below):
 #   docker build -f docker/qsm-local.dockerfile \
 #       --build-arg BASE_IMAGE=<local-devcontainer-image-tag> \
-#       --build-context iqsm_plus=/Users/uqhsun8/Documents/repos/iQSM_Plus \
 #       -t openrecon-qsm:local .
 
 ARG BASE_IMAGE
@@ -28,8 +28,15 @@ RUN pip3 install --no-cache-dir --upgrade torch nibabel scipy matplotlib h5py
 RUN mkdir -p /opt/code/python-ismrmrd-server
 COPY . /opt/code/python-ismrmrd-server
 
-COPY --from=iqsm_plus . /opt/code/iQSM_Plus
+# Cloned directly rather than requiring a local checkout / --build-context -- see
+# qsm.dockerfile's equivalent step for the full rationale.
+RUN git clone https://github.com/sunhongfu/iQSM_Plus.git /opt/code/iQSM_Plus
 ENV IQSM_PLUS_DIR=/opt/code/iQSM_Plus
+
+# Pretrained model checkpoints are hosted on Hugging Face, not committed to the git repo
+# -- see qsm.dockerfile's equivalent step for the full rationale.
+RUN mkdir -p /opt/code/iQSM_Plus/checkpoints && \
+    python3 -c "import urllib.request; base = 'https://huggingface.co/sunhongfu/iQSM_Plus/resolve/main'; [urllib.request.urlretrieve(f'{base}/{n}', f'/opt/code/iQSM_Plus/checkpoints/{n}') for n in ['iQSM_plus.pth', 'LoTLayer_chi.pth']]"
 
 WORKDIR /opt/code/python-ismrmrd-server
 

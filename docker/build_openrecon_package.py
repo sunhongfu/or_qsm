@@ -8,9 +8,7 @@ Docker-24-compatible manifest format if needed, and zip with docs.pdf.
 
 Prerequisite: build the application image first (step 1), separately, whenever qsm.py or
 its dependencies change -- this script only re-packages, it does not rebuild the app:
-    docker build -f docker/qsm.dockerfile \\
-        --build-context iqsm_plus=/Users/uqhsun8/Documents/repos/iQSM_Plus \\
-        -t openrecon-qsm:prod .
+    docker build --platform linux/amd64 -f docker/qsm.dockerfile -t openrecon-qsm:prod .
 
 Usage:
     python3 docker/build_openrecon_package.py
@@ -28,7 +26,7 @@ import sys
 # ---------------------------------------------------------------------------
 REPO_ROOT       = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JSON_FILE_PATH  = os.path.join(REPO_ROOT, "qsm_json_ui.json")
-SCHEMA_PATH     = "/Users/uqhsun8/Library/CloudStorage/OneDrive-TheUniversityofQueensland/Desktop/workshop_files/or_sdk/OpenReconSchema_1.1.0.json"
+SCHEMA_PATH     = os.path.join(REPO_ROOT, "OpenReconSchema_1.1.0.json")  # from Siemens' Open Recon SDK
 BASE_IMAGE_NAME = "openrecon-qsm:prod"          # built separately via docker/qsm.dockerfile
 DOCS_FILE       = os.path.join(REPO_ROOT, "docs.pdf")
 OUTPUT_DIR      = os.path.expanduser("~/Desktop/OpenRecon_package")

@@ -17,23 +17,23 @@
 	// appPort allows connections from non-localhost
 	"appPort": ["9020:9020"],
 
-	// Bind-mount the iQSM_Plus repo (kept as a separate checkout, not part of this
-	// repo) so qsm.py can import it from inside the devcontainer, and the example
-	// DICOM test dataset (kept out of the repo/workspace to avoid bloating it)
+	// Bind-mount the example DICOM test dataset (kept out of the repo/workspace to avoid
+	// bloating it -- you'll need your own test DICOMs at this host path, or edit it).
+	// iQSM_Plus itself is NOT bind-mounted -- postCreate.sh clones it directly into the
+	// container instead, so this devcontainer works out of the box for anyone, not just
+	// on the original author's machine.
 	"mounts": [
-		"source=/Users/uqhsun8/Documents/repos/iQSM_Plus,target=/opt/iQSM_Plus,type=bind,consistency=cached",
 		"source=/Users/uqhsun8/Downloads/DICOMs_openrecon,target=/opt/data/DICOMs_openrecon,type=bind,consistency=cached"
 	],
 
-	// Tell qsm.py where to find the mounted iQSM_Plus checkout above
+	// Tell qsm.py where postCreate.sh clones iQSM_Plus to
 	"containerEnv": {
 		"IQSM_PLUS_DIR": "/opt/iQSM_Plus"
 	},
 
-	// Default setting for Windows changes files to CRLF, so match this to avoid all files
-	// being marked as changed.  Could be disabled for non-Windows hosts
-	// torch/nibabel/scipy are added here for the iQSM+ QSM module (qsm.py)
-	"postCreateCommand": "git config --global core.autocrlf true && pip install ipykernel torch nibabel scipy",
+	// Sets core.autocrlf, installs torch/nibabel/scipy for the iQSM+ QSM module
+	// (qsm.py), and clones iQSM_Plus + downloads its checkpoints -- see postCreate.sh.
+	"postCreateCommand": "bash .devcontainer/postCreate.sh",
 
 	"customizations": {
 		"vscode": {
