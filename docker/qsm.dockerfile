@@ -165,6 +165,16 @@ RUN find /opt/code/python-ismrmrd-server -name "*.sh" -exec chmod +x {} \;
 # vanish the moment that task runs.
 ENV IQSM_PLUS_DIR=/opt/code/python-ismrmrd-server/iQSM_Plus
 
+# If iQSM_Plus was never cloned (README step skipped), `COPY .` above silently includes
+# nothing for this path -- COPY doesn't fail on an absent subdirectory -- so
+# IQSM_PLUS_DIR would point at a directory that doesn't exist. Check for an actual source
+# file (not just the directory, in case of a stray empty folder) and fail loudly here
+# with a clear pointer back to the README, rather than a confusing runtime ImportError.
+RUN test -f "$IQSM_PLUS_DIR/inference.py" || \
+    { echo "ERROR: iQSM_Plus not found at $IQSM_PLUS_DIR -- see readme.md's 'Building the" \
+           "Docker image' section (git clone iQSM_Plus into this repo first)." >&2; \
+      exit 1; }
+
 # Pretrained model checkpoints (https://huggingface.co/sunhongfu/iQSM_Plus) are expected
 # to already be present in the local iQSM_Plus/ clone -- same prerequisite as iQSM_Plus's
 # code itself, per the header comment / readme.md's "Building the Docker image" section

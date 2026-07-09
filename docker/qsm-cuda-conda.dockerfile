@@ -129,6 +129,13 @@ RUN find /opt/code/python-ismrmrd-server -name "*.sh" -exec chmod +x {} \;
 # equivalent step for the full rationale on why it's nested here, not a sibling path.
 ENV IQSM_PLUS_DIR=/opt/code/python-ismrmrd-server/iQSM_Plus
 
+# In case iQSM_Plus was never cloned (README step skipped) -- see qsm.dockerfile's
+# equivalent step for the full rationale.
+RUN test -f "$IQSM_PLUS_DIR/inference.py" || \
+    { echo "ERROR: iQSM_Plus not found at $IQSM_PLUS_DIR -- see readme.md's 'Building the" \
+           "Docker image' section (git clone iQSM_Plus into this repo first)." >&2; \
+      exit 1; }
+
 # Checkpoints are expected to already be present in the local iQSM_Plus/ clone (same
 # prerequisite as its code) -- see qsm.dockerfile's equivalent step for the full
 # rationale. Fail loudly here rather than produce an image that only errors at runtime.
