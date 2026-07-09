@@ -1,40 +1,36 @@
 {
 	"name": "or-qsm-devcontainer",
 
-	// Builds all the way to qsm.dockerfile's final "openrecon-qsm" stage (not just the
-	// devcontainer-equivalent "python-mrd-cuda-devcontainer" stage) and forces
-	// --platform linux/amd64 explicitly -- both required for vendor/bet2's amd64 binary to
-	// actually run:
+	// Builds qsm.dockerfile's "python-mrd-cuda-devcontainer" stage (not the final
+	// "openrecon-qsm" one) and forces --platform linux/amd64 explicitly -- the platform
+	// forcing is what actually makes vendor/bet2's amd64 binary runnable:
 	//   - --platform linux/amd64 makes the *whole container* amd64, run under Docker
 	//     Desktop's Rosetta/QEMU-accelerated amd64 VM on Apple Silicon -- bet2 then runs
 	//     natively *within* that amd64 environment, no foreign-binary translation needed.
 	//     (A native-arm64 container trying to exec a foreign amd64 binary directly fails
 	//     under Rosetta: "failed to open elf at /lib64/ld-linux-x86-64.so.2" -- verified.
-	//     This isn't optional on Apple Silicon either way: stage 2's cu118 torch wheel has
-	//     no arm64 build, so it already silently requires this platform forcing to install
-	//     at all.) On a native linux/amd64 host (e.g. a Linux GPU machine) this is a no-op.
-	//   - Building through to "openrecon-qsm" plus the workspaceMount/workspaceFolder
-	//     override below (mounting this repo at /opt/code/python-ismrmrd-server, matching
-	//     where the Dockerfile's own COPY . put it, instead of VS Code's default
-	//     /workspaces/or_qsm) makes the live host code shadow the image's baked-in copy at
-	//     exactly the path its own WORKDIR/CMD expect -- the same shape as the
-	//     ".vscode/tasks.json" "Start QSM server (Docker)" task's bind-mount, so this
-	//     devcontainer is now equivalent to that task, just live-editable interactively.
-	//
-	// Trade-off: on Apple Silicon this means the *entire* devcontainer -- not just bet2
-	// calls -- runs under full amd64 emulation (slower pip installs, Python startup, every
-	// terminal command), not just a fast native-arm64 editing environment. Chosen
-	// deliberately in exchange for bet2/GPU working directly inside the devcontainer on
-	// every host, with no separate Docker task needed.
+	//     This isn't optional on Apple Silicon either way: this stage's cu118 torch wheel
+	//     has no arm64 build, so it already silently requires this platform forcing to
+	//     install at all.) On a native linux/amd64 host (e.g. a Linux GPU machine) this is
+	//     a no-op.
+	//   - The final "openrecon-qsm" stage is deliberately NOT used here, even though it's
+	//     what the "Start QSM server (Docker)" task runs -- it would also work (verified),
+	//     but its build-time iQSM_Plus/checkpoint fail-fast checks would then block the
+	//     devcontainer from building at all on a fresh clone before those are in place,
+	//     for zero benefit: qsm.py finds iQSM_Plus and vendor/bet2 via paths relative to
+	//     its own location regardless of which stage baked (or didn't bake) them in, so
+	//     they resolve identically here via the live workspace mount below.
 	"build": {
 		"dockerfile": "../docker/qsm.dockerfile",
-		"target":     "openrecon-qsm",
+		"target":     "python-mrd-cuda-devcontainer",
 		"context":    "../",
 		"options":    ["--platform=linux/amd64"]
 	},
 
-	// Mount this repo at the exact path the Dockerfile's own COPY . (and its WORKDIR/CMD)
-	// use, so the live host code shadows the image's baked-in copy completely -- matching
+	// Mounts this repo at the same path the Dockerfile's final stage's COPY . (and its
+	// WORKDIR/CMD) use, even though this build only goes through an earlier stage that
+	// doesn't have that COPY -- so qsm.py's IQSM_PLUS_DIR/BET2_DIR resolve to exactly the
+	// same paths they would inside the real openrecon-qsm:prod image, matching
 	// ".vscode/tasks.json"'s "Start QSM server (Docker)" task's bind-mount shape.
 	"workspaceMount": "source=${localWorkspaceFolder},target=/opt/code/python-ismrmrd-server,type=bind,consistency=cached",
 	"workspaceFolder": "/opt/code/python-ismrmrd-server",
@@ -59,10 +55,10 @@
 	// single workspaceMount above covers them automatically, live-editable, with no extra
 	// mounts or postCreateCommand cloning/downloading needed. qsm.py finds iQSM_Plus via a
 	// path relative to its own location (see IQSM_PLUS_DIR in qsm.py), so no containerEnv
-	// override is needed either. Note this build now goes through "openrecon-qsm"'s own
-	// checkpoint/iQSM_Plus fail-fast checks (see qsm.dockerfile) -- unlike before, the
-	// devcontainer image itself won't build at all if those aren't in place yet, same
-	// requirement the "Building the Docker image" instructions already state.
+	// override is needed either. This stage has no build-time check for them (unlike the
+	// final "openrecon-qsm" stage) -- if they're missing, the devcontainer still builds
+	// fine, and qsm.py just raises a clear runtime error the first time you actually try
+	// to run a reconstruction.
 
 	// core.autocrlf: harmless/no-op on Linux, kept for parity if this devcontainer is ever
 	// used cross-platform again. ipykernel: the one Python dep this stage lacks (it's

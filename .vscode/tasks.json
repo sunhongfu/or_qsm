@@ -3,18 +3,23 @@
     // for the documentation about the tasks.json format
     "version": "2.0.0",
     "tasks": [
-        // Docker-based alternative to the "Start QSM server" launch config. Needed to
-        // actually exercise bet2 (FSL's Brain Extraction Tool) -- bet2 is a linux/amd64
-        // ELF binary baked into the openrecon-qsm:prod image, and cannot execute at all
-        // under the native "Start QSM server" launch config (which runs main.py directly
-        // on macOS via debugpy) -- that config always falls back to unmasked
-        // reconstruction, silently (see qsm.py's _run_bet2, which catches the resulting
-        // "Exec format error" and logs a warning rather than failing the reconstruction).
+        // Alternative to the "Start QSM server" launch config, for when you'd rather not
+        // open this repo in the devcontainer at all -- run this from a plain VS Code window
+        // on the host (Docker isn't available *inside* the devcontainer itself, so this
+        // task won't work from a terminal already connected to it). The devcontainer's own
+        // "Start QSM server" launch config now runs bet2 fine directly (it forces
+        // --platform linux/amd64, see .devcontainer/devcontainer.json's comments) -- this
+        // task's remaining purpose is testing the already-built, tagged openrecon-qsm:prod
+        // image specifically (e.g. right before packaging), or a quick server without
+        // switching environments. Only the *native*, no-container "Start QSM server" launch
+        // config (i.e. run outside the devcontainer too) still can't run bet2 on a
+        // non-linux/amd64 host -- it always falls back to unmasked reconstruction, silently
+        // (see qsm.py's _run_bet2, which catches the resulting "Exec format error").
         //
         // Maps host port 9020 -> container port 9002, so RunQSMRecon.ipynb's existing
         // `args.port = 9020` works unchanged regardless of which server variant is
-        // running -- just start this task instead of the "Start QSM server" launch
-        // config. Requires openrecon-qsm:prod to already be built (see docker/qsm.dockerfile).
+        // running -- just start this task instead. Requires openrecon-qsm:prod to already
+        // be built (see docker/qsm.dockerfile).
         //
         // Bind-mounts the repo over /opt/code/python-ismrmrd-server (where the image's own
         // COPY . baked the code in at build time) for live editing -- edit qsm.py, restart

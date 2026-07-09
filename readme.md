@@ -114,38 +114,25 @@ Parameter `id`s must match `^[A-Za-z0-9]+$` (no underscores) -- an Open Recon sc
 
 ## Local testing
 
-**Requires VS Code** (with the Dev Containers, Python, and Jupyter extensions) -- every option
-below relies on this repo's `.vscode/`/`.devcontainer/` configuration, which only VS Code
-understands.
+**Requires VS Code** (with the Dev Containers, Python, and Jupyter extensions).
 
 Put a sample multi-echo GRE DICOM series (magnitude + phase) under `data/dicoms/`
 (gitignored -- not part of the repo). [RunQSMRecon.ipynb](RunQSMRecon.ipynb) walks through
-converting it, running a reconstruction, and displaying the result. Two ways to run the server
-for it:
+converting it, running a reconstruction, and displaying the result.
 
-- **Devcontainer** ("Dev Containers: Reopen in Container", recommended) -- builds all the way to
-  `qsm.dockerfile`'s final `openrecon-qsm` stage (forcing `--platform linux/amd64`) and
-  live-mounts this repo over the image's own code, so it's equivalent to running the real
-  production image with live editing -- `bet2` and GPU both work directly inside it, on every
-  host. See [.devcontainer/devcontainer.json](.devcontainer/devcontainer.json)'s own comments for
-  the full rationale and the trade-off it makes (on Apple Silicon, the *entire* devcontainer runs
-  under amd64 emulation, not just `bet2` calls -- slower pip installs, Python startup, every
-  terminal command, in exchange for not needing a separate Docker-based option day-to-day). Once
-  open, use the **"Start QSM server"** launch config inside it.
-- **"Start QSM server" launch config** (Run and Debug tab, native -- no Docker/devcontainer at
-  all) -- fastest to start, but requires a local `.venv` with this project's dependencies already
-  installed. Cannot run `bet2` on a non-linux/amd64 host (e.g. a Mac): it's a linux/amd64 ELF
-  binary and fails with `Exec format error`; `qsm.py` catches this and silently falls back to
-  unmasked reconstruction (see `_run_bet2` in `qsm.py`).
-
-Both listen on the same port (9020), so notebook cells don't need to change either way.
+Open this repo in the devcontainer ("Dev Containers: Reopen in Container"), then use the
+**"Start QSM server"** launch config (Run and Debug tab) to start the server on port 9020 --
+`bet2` and GPU both work directly inside it, on every host, since it forces
+`--platform linux/amd64` and live-mounts this repo over the image's own code (see
+[.devcontainer/devcontainer.json](.devcontainer/devcontainer.json)'s own comments for the full
+rationale and its one trade-off: on Apple Silicon, the *entire* devcontainer runs under amd64
+emulation, not just `bet2` calls -- slower pip installs, Python startup, every terminal command).
 
 There's also a **"Start QSM server (Docker)" task** in `.vscode/tasks.json` that runs the
 already-built, tagged `openrecon-qsm:prod` image directly (`docker run`, no devcontainer
 rebuild/reopen needed) with the same live bind-mount -- handy for a quick server without
 switching VS Code's environment, or for testing the *exact* image that's about to be
-[packaged](#packaging-for-scanner-deployment), as opposed to the devcontainer's own separately
-managed build of the same stage.
+[packaged](#packaging-for-scanner-deployment).
 
 To simulate a specific UI parameter value from `client.py` without a real scanner/Open Recon UI: create a `<config>.json` sidecar file (e.g. `qsm.json`) in the working directory --
 ```json
