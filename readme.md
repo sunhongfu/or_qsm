@@ -83,7 +83,7 @@ docker build --platform linux/amd64 -f docker/qsm.dockerfile \
 See `docker/qsm.dockerfile`'s header comment for troubleshooting registry/BuildKit issues.
 
 **Using the devcontainer instead?** Do the `git clone ... iQSM_Plus` and checkpoint-download steps
-above (and put test DICOMs under `data/DICOMs_openrecon/`, see [Local testing](#local-testing))
+above (and put test DICOMs under `data/dicoms/`, see [Local testing](#local-testing))
 *before* opening the devcontainer -- it no longer clones/downloads anything for you (see
 `.devcontainer/devcontainer.json`).
 
@@ -111,7 +111,7 @@ Parameter `id`s must match `^[A-Za-z0-9]+$` (no underscores) -- an Open Recon sc
 
 ## Local testing
 
-Put a sample multi-echo GRE DICOM series (magnitude + phase) under `data/DICOMs_openrecon/`
+Put a sample multi-echo GRE DICOM series (magnitude + phase) under `data/dicoms/`
 (gitignored -- not part of the repo). [RunQSMRecon.ipynb](RunQSMRecon.ipynb) walks through
 converting it, running a reconstruction, and displaying the result. To run the server for it:
 - **"Start QSM server (Docker)" task** (Terminal > Run Task) -- runs the actual `openrecon-qsm:prod` image, matching production, including `bet2`. Requires the image already built and Docker Desktop running. Maps to the same port (9020) as the native config, so notebook cells don't need to change either way.
