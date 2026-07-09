@@ -29,7 +29,7 @@ JSON_FILE_PATH  = os.path.join(REPO_ROOT, "qsm_json_ui.json")
 SCHEMA_PATH     = os.path.join(REPO_ROOT, "OpenReconSchema_1.1.0.json")  # from Siemens' Open Recon SDK
 BASE_IMAGE_NAME = "openrecon-qsm:prod"          # built separately via docker/qsm.dockerfile
 DOCS_FILE       = os.path.join(REPO_ROOT, "docs.pdf")
-OUTPUT_DIR      = os.path.expanduser("~/Desktop/OpenRecon_package")
+OUTPUT_DIR      = os.path.join(REPO_ROOT, "OpenRecon_package")
 DOCKER_VERSION_MAX = "25.0.0"                   # Open Recon's documented max supported Docker version
 
 
@@ -111,6 +111,15 @@ def save_and_convert(image_name, base_filename, output_dir):
              f"docker load -i /share/{os.path.basename(oci_path)}"])
         run(["docker", "exec", "or_build_dind", "/bin/sh", "-c",
              f"docker save -o /share/{os.path.basename(tar_path)} {image_name}"])
+        # The docker save above runs as root inside the dind container. On native Linux
+        # Docker Engine, bind mounts don't translate UIDs (unlike Docker Desktop's Mac/
+        # Windows VM layer, which smooths this over) -- so the resulting file on the host
+        # comes out root-owned, and the zip step below fails with "Permission denied" for
+        # the non-root host user. chown it back. hasattr guard: os.getuid()/getgid() don't
+        # exist on Windows, where this isn't needed anyway (same VM-layer smoothing as Mac).
+        if hasattr(os, "getuid"):
+            run(["docker", "exec", "or_build_dind", "chown",
+                 f"{os.getuid()}:{os.getgid()}", f"/share/{os.path.basename(tar_path)}"])
     finally:
         subprocess.run(["docker", "stop", "or_build_dind"])
 

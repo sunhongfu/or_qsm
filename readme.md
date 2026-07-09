@@ -89,11 +89,14 @@ above (and put test DICOMs under `data/dicoms/`, see [Local testing](#local-test
 
 ## Packaging for scanner deployment
 
+Requires the `jsonschema` and `packaging` packages (schema validation and Docker version
+comparison, respectively) -- `pip install jsonschema packaging` if you don't already have them.
+
 ```bash
 python3 docker/build_openrecon_package.py
 ```
 
-Validates `qsm_json_ui.json` against the Open Recon JSON schema, builds a labeled image (`docker/OpenRecon_qsm.dockerfile`, generated automatically from the JSON config), `docker save`s it, converts the manifest format if the local Docker version exceeds Open Recon's supported maximum, and zips it with `docs.pdf`. Output goes to `~/Desktop/OpenRecon_package/`.
+Validates `qsm_json_ui.json` against the Open Recon JSON schema, builds a labeled image (`docker/OpenRecon_qsm.dockerfile`, generated automatically from the JSON config), `docker save`s it, converts the manifest format if the local Docker version exceeds Open Recon's supported maximum, and zips it with `docs.pdf`. Output goes to `OpenRecon_package/` in the repo root (gitignored).
 
 **Versioning**: bump `qsm_json_ui.json`'s `general.version` (and the matching `regulatory_information` fields) before repackaging for any functional change. Commit and push to GitHub whenever the version bumps, so the repo history stays in sync with what's actually been shipped.
 

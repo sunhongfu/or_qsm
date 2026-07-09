@@ -10,6 +10,12 @@ data/
 __pycache__/
 log.txt
 
+# Output of docker/build_openrecon_package.py (docker/qsm.dockerfile's built image .tar,
+# a docs.pdf copy, and the final .zip) -- see readme.md's "Packaging for scanner
+# deployment" section. *.tar/*.zip above already cover the individual files, but this is
+# more explicit and also covers the .pdf copy.
+OpenRecon_package/
+
 # iQSM_Plus is a separate repo (https://github.com/sunhongfu/iQSM_Plus), cloned locally
 # into this subfolder rather than being tracked here -- see readme.md's "Building the
 # Docker image" section. Its own .git/ is harmless as long as it stays ignored here.
