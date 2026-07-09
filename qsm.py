@@ -30,8 +30,9 @@ debugFolder = "/tmp/share/debug"
 # The iQSM+ pipeline (inference.py, models/, checkpoints/) is kept as its own
 # repo/checkout, cloned as a gitignored subfolder of this repo rather than tracked in
 # it (see readme.md's "Building the Docker image" section) -- so try IQSM_PLUS_DIR
-# first (if set, e.g. by the devcontainer's containerEnv), then fall back to where it
-# ends up in the Docker image / when running from a plain venv on the host, rather than
+# first (for manual overrides), then fall back to where it ends up in the Docker image,
+# then to a path relative to this file's own location (which is where it lands as a
+# local checkout -- devcontainer, native venv, or plain git clone), rather than
 # requiring the launch config/environment to be edited per-context.
 _IQSM_PLUS_CANDIDATES = [
     os.environ.get("IQSM_PLUS_DIR"),

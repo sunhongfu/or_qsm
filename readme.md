@@ -40,26 +40,36 @@ A Siemens [Open Recon](https://www.siemens-healthineers.com/magnetic-resonance-i
 
 ## Building the Docker image
 
-**Step 1 (one-time):** clone [iQSM_Plus](https://github.com/sunhongfu/iQSM_Plus) (model/inference code) into this repo as a subfolder. It's gitignored, so this doesn't affect this repo's own git history, but it IS included in the Docker build context, so the build picks it up automatically -- no `--build-context` needed:
+Every command below runs from wherever the first one leaves you (the repo root) -- no further
+`cd` needed at any step, including packaging and local testing further down this page.
 
 ```bash
+git clone https://github.com/sunhongfu/or_qsm.git
+cd or_qsm
+
+# iQSM_Plus (model/inference code) as a subfolder -- gitignored, so this doesn't affect
+# this repo's own git history, but it IS included in the Docker build context, so the
+# build below picks it up automatically (no --build-context needed). Also means
+# iQSM_Plus/ is covered by the live-edit bind-mount in .vscode/tasks.json's "Start QSM
+# server (Docker)" task -- edit its code, restart the task, no rebuild needed, same as
+# qsm.py.
 git clone https://github.com/sunhongfu/iQSM_Plus.git iQSM_Plus
-```
 
-This also means `iQSM_Plus/` is covered by the live-edit bind-mount in `.vscode/tasks.json`'s "Start QSM server (Docker)" task -- edit its code, restart the task, no rebuild needed, same as `qsm.py`.
-
-**Step 2:** build.
-
-```bash
+# --platform linux/amd64 is required on Apple Silicon: the base image (python:3.12-slim)
+# publishes a native arm64 manifest, so without this flag Docker silently builds for
+# arm64 and the CUDA-only torch wheels fail to resolve with a confusing "no matching
+# distribution" error. Not needed (but harmless) on a native linux/amd64 machine.
 docker build --platform linux/amd64 -f docker/qsm.dockerfile \
     -t openrecon-qsm:prod .
 ```
 
 Pretrained checkpoints are downloaded from [Hugging Face](https://huggingface.co/sunhongfu/iQSM_Plus) during the build (they're not committed to the iQSM_Plus git repo itself) -- skipped automatically if your local clone already has them (e.g. after running iQSM_Plus's own `run.py --download-checkpoints`).
 
-`--platform linux/amd64` is required on Apple Silicon: the base image (`python:3.12-slim`) publishes a native arm64 manifest, so without this flag Docker silently builds for arm64 and the CUDA-only torch wheels fail to resolve with a confusing "no matching distribution" error.
-
 See `docker/qsm.dockerfile`'s header comment for troubleshooting registry/BuildKit issues.
+
+**Using the devcontainer instead?** Do the `git clone ... iQSM_Plus` step above (and put test
+DICOMs under `data/DICOMs_openrecon/`, see [Local testing](#local-testing)) *before* opening the
+devcontainer -- it no longer clones/downloads anything for you (see `.devcontainer/devcontainer.json`).
 
 ## Packaging for scanner deployment
 
@@ -85,7 +95,9 @@ Parameter `id`s must match `^[A-Za-z0-9]+$` (no underscores) -- an Open Recon sc
 
 ## Local testing
 
-[RunQSMRecon.ipynb](RunQSMRecon.ipynb) walks through converting sample DICOMs, running a reconstruction, and displaying the result. To run the server for it:
+Put a sample multi-echo GRE DICOM series (magnitude + phase) under `data/DICOMs_openrecon/`
+(gitignored -- not part of the repo). [RunQSMRecon.ipynb](RunQSMRecon.ipynb) walks through
+converting it, running a reconstruction, and displaying the result. To run the server for it:
 - **"Start QSM server (Docker)" task** (Terminal > Run Task) -- runs the actual `openrecon-qsm:prod` image, matching production, including `bet2`. Requires the image already built and Docker Desktop running. Maps to the same port (9020) as the native config, so notebook cells don't need to change either way.
 
 To simulate a specific UI parameter value from `client.py` without a real scanner/Open Recon UI: create a `<config>.json` sidecar file (e.g. `qsm.json`) in the working directory --

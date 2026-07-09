@@ -26,27 +26,18 @@
 	// appPort allows connections from non-localhost
 	"appPort": ["9020:9020"],
 
-	// No separate DICOM test-data mount -- test DICOMs live under data/DICOMs_openrecon
-	// (gitignored, populate it yourself), which is already covered by VS Code's default
-	// workspace bind-mount since it's inside the repo. Docker's bind mounts error out hard
-	// on a missing host source path (unlike a plain directory mount), which is why this
-	// used to be a separate top-level mount pointing outside the repo -- moving it inside
-	// avoids that failure mode entirely. RunQSMRecon.ipynb resolves it as a path relative
-	// to the repo root, so this works the same in the devcontainer and natively.
-	//
-	// iQSM_Plus itself is NOT bind-mounted separately either -- postCreate.sh clones it into
-	// ${containerWorkspaceFolder}/iQSM_Plus instead, i.e. as a gitignored subfolder of the
-	// already-mounted workspace (same layout docker/qsm.dockerfile expects), so it's live
-	// editable from the host and picked up automatically without a second mount.
+	// No separate DICOM test-data mount, and no bind-mount for iQSM_Plus either -- both are
+	// expected to already exist as subfolders of this repo before you open the devcontainer
+	// (see readme.md's "Building the Docker image" and "Local testing" sections), so VS
+	// Code's default workspace bind-mount covers them automatically, live-editable, with no
+	// extra mounts or postCreateCommand cloning/downloading needed. qsm.py finds iQSM_Plus
+	// via a path relative to its own location (see IQSM_PLUS_DIR in qsm.py), so no
+	// containerEnv override is needed either.
 
-	// Tell qsm.py where postCreate.sh clones iQSM_Plus to
-	"containerEnv": {
-		"IQSM_PLUS_DIR": "${containerWorkspaceFolder}/iQSM_Plus"
-	},
-
-	// Sets core.autocrlf, installs ipykernel (the only Python dep this stage lacks), and
-	// clones iQSM_Plus + downloads its checkpoints -- see postCreate.sh.
-	"postCreateCommand": "bash .devcontainer/postCreate.sh",
+	// core.autocrlf: harmless/no-op on Linux, kept for parity if this devcontainer is ever
+	// used cross-platform again. ipykernel: the one Python dep docker/qsm.dockerfile's
+	// devcontainer stage lacks (it's dev/notebook-only, not a runtime dependency).
+	"postCreateCommand": "git config --global core.autocrlf true && pip install ipykernel",
 
 	"customizations": {
 		"vscode": {
