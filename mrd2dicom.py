@@ -284,7 +284,13 @@ def main(args):
                 # Write DICOM files
                 fileName = "%02.0f_%s_%03.0f.dcm" % (dicomDset.SeriesNumber, dicomDset.SeriesDescription, dicomDset.InstanceNumber)
                 print("  Writing file %s" % fileName)
-                dicomDset.save_as(os.path.join(args.out_folder, fileName), enforce_file_format=True)
+                # implicit_vr/little_endian passed explicitly (matching file_meta.TransferSyntaxUID
+                # above) because save_as() still reads the deprecated is_implicit_VR/is_little_endian
+                # properties internally as its own fallback default when these aren't given, which
+                # triggers the same deprecation warning even though we never set those properties
+                # ourselves -- the Transfer Syntax UID alone isn't enough to silence it.
+                dicomDset.save_as(os.path.join(args.out_folder, fileName), enforce_file_format=True,
+                                  implicit_vr=False, little_endian=True)
                 filesWritten += 1
 
     print("Wrote %d DICOM files to %s" % (filesWritten, args.out_folder))
