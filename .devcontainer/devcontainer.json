@@ -2,25 +2,33 @@
 	"name": "or-qsm-devcontainer",
 
 	// Builds from docker/qsm.dockerfile's own devcontainer-equivalent stage (not the
-	// generic docker/Dockerfile) -- this host is a native linux/amd64 machine with a real
-	// NVIDIA GPU, so there's no QEMU/Rosetta emulation cost and no ARM/CUDA mismatch: the
-	// CUDA torch stack builds and runs natively, and vendor/bet2's amd64 binary executes
-	// directly too (it doesn't need a COPY into this stage -- it arrives via the workspace
-	// bind-mount below, same fallback path qsm.py already uses for local/notebook testing).
-	// This gives full production fidelity *inside* the devcontainer itself, unlike on an
-	// Apple Silicon Mac (see git history) where this stage would require forcing
-	// --platform linux/amd64 and pay for emulation with no GPU to actually benefit from.
-	// If you reopen this repo's devcontainer on a Mac, swap "target" back to
-	// docker/Dockerfile's "python-mrd-devcontainer" or it'll try to build this CUDA stage
-	// there and be extremely slow (or fail outright for lack of a GPU).
+	// generic docker/Dockerfile) -- this host is a native linux/amd64 machine, so there's
+	// no QEMU/Rosetta emulation cost and no ARM/CUDA mismatch: the CUDA torch stack builds
+	// and runs natively (GPU used if present -- see "hostRequirements" below, gracefully
+	// CPU-only otherwise), and vendor/bet2's amd64 binary executes directly too (it doesn't
+	// need a COPY into this stage -- it arrives via the workspace bind-mount below, same
+	// fallback path qsm.py already uses for local/notebook testing). This gives full
+	// production fidelity *inside* the devcontainer itself, unlike on an Apple Silicon Mac
+	// (see git history) where this stage would require forcing --platform linux/amd64 and
+	// pay for emulation regardless of GPU availability. If you reopen this repo's
+	// devcontainer on a Mac, swap "target" back to docker/Dockerfile's
+	// "python-mrd-devcontainer" or it'll try to build this CUDA stage there and be
+	// extremely slow.
 	"build": {
 		"dockerfile": "../docker/qsm.dockerfile",
 		"target":     "python-mrd-cuda-devcontainer",
 		"context":    "../"
 	},
 
-	// Real GPU available on this host -- see the "build" comment above.
-	"runArgs": [ "--gpus=all" ],
+	// "optional" (not runArgs: ["--gpus=all"]) -- lets the devcontainers CLI's own GPU
+	// detection (--gpu-availability detect, its default) enable GPU access when present
+	// and silently skip it otherwise, instead of a hard Docker CLI failure on any machine
+	// where the NVIDIA Container Toolkit/CDI isn't set up (or has no GPU at all, e.g. a
+	// CPU-only Linux box). qsm.py/inference.py already fall back to CPU inference cleanly
+	// when torch.cuda.is_available() is False, so this is a safe default everywhere.
+	"hostRequirements": {
+		"gpu": "optional"
+	},
 
 	// Use appPort to "publish" a port to the host machine. Compared to forwardPorts,
 	// appPort allows connections from non-localhost
