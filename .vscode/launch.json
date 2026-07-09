@@ -16,7 +16,6 @@
                 // "-s"
             ],
             "console": "integratedTerminal",
-            "consoleTitle": "Server",
             "justMyCode": true,
         },
 
@@ -32,7 +31,6 @@
                 "-d", "qsm"
             ],
             "console": "integratedTerminal",
-            "consoleTitle": "QSM Server",
             "justMyCode": true,
         },
 
@@ -49,7 +47,6 @@
                 "-o", "${workspaceFolder}/data/shepplogan_recon.mrd"
             ],
             "console": "integratedTerminal",
-            "consoleTitle": "Client",
             "justMyCode": true,
         },
     ],
