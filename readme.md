@@ -56,11 +56,21 @@ cd or_qsm
 git clone https://github.com/sunhongfu/iQSM_Plus.git iQSM_Plus
 
 # Pretrained checkpoints are hosted on Hugging Face, not committed to the iQSM_Plus git
-# repo -- the Docker build below downloads them automatically too, but only into the
-# image itself; that doesn't help the devcontainer or the "Start QSM server (Docker)"
-# task, since their live bind-mount overwrites the image's checkpoints/ with this
-# (empty) local one. Download them here once so every workflow has them.
-(cd iQSM_Plus && python3 run.py --download-checkpoints)
+# repo. Downloaded here with plain urllib (stdlib only -- no pip installs needed on a
+# fresh clone) rather than iQSM_Plus's own `run.py --download-checkpoints` (which needs
+# torch/nibabel/etc. already installed). The Docker build below would also fetch them,
+# but only into the image itself, which doesn't help the devcontainer or the "Start QSM
+# server (Docker)" task, since their live bind-mount overwrites the image's checkpoints/
+# with this (empty) local one -- so do it here once and every workflow has them.
+mkdir -p iQSM_Plus/checkpoints
+python3 -c "
+import os, urllib.request
+base = 'https://huggingface.co/sunhongfu/iQSM_Plus/resolve/main'
+for name in ['iQSM_plus.pth', 'LoTLayer_chi.pth']:
+    local = f'iQSM_Plus/checkpoints/{name}'
+    if not os.path.exists(local):
+        urllib.request.urlretrieve(f'{base}/{name}', local)
+"
 
 # --platform linux/amd64 is required on Apple Silicon: the base image (python:3.12-slim)
 # publishes a native arm64 manifest, so without this flag Docker silently builds for
@@ -72,8 +82,8 @@ docker build --platform linux/amd64 -f docker/qsm.dockerfile \
 
 See `docker/qsm.dockerfile`'s header comment for troubleshooting registry/BuildKit issues.
 
-**Using the devcontainer instead?** Do the `git clone ... iQSM_Plus` and `--download-checkpoints`
-steps above (and put test DICOMs under `data/DICOMs_openrecon/`, see [Local testing](#local-testing))
+**Using the devcontainer instead?** Do the `git clone ... iQSM_Plus` and checkpoint-download steps
+above (and put test DICOMs under `data/DICOMs_openrecon/`, see [Local testing](#local-testing))
 *before* opening the devcontainer -- it no longer clones/downloads anything for you (see
 `.devcontainer/devcontainer.json`).
 
