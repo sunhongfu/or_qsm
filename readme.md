@@ -35,7 +35,7 @@ A Siemens [Open Recon](https://www.siemens-healthineers.com/magnetic-resonance-i
 - [docker/qsm.dockerfile](docker/qsm.dockerfile) -- builds the deployable image. `docker/qsm-cuda-conda.dockerfile` is kept as a rollback to the original conda-based build (larger, ~8.7GB vs ~6.3GB) if the slim pip-based one ever misbehaves.
 - [docker/build_openrecon_package.py](docker/build_openrecon_package.py) -- packages the built image + `docs.pdf` into the `.zip` Open Recon expects for scanner installation.
 - [qsm_json_ui.json](qsm_json_ui.json) -- the Open Recon app manifest: UI parameters, GPU/memory/CPU requirements, versioning. Gets base64-encoded into a Docker image label during packaging.
-- [RunQSMRecon.ipynb](RunQSMRecon.ipynb) -- local test/validation workflow: DICOM-to-MRD conversion, running a reconstruction, displaying the QSM map, and a standalone `bet2` smoke test.
+- [RunQSMRecon.ipynb](RunQSMRecon.ipynb) -- local test/validation workflow: DICOM-to-MRD conversion, running a reconstruction, converting the result to DICOM, and displaying the QSM map.
 - [docs/scanner-deployment-guide.md](docs/scanner-deployment-guide.md) -- scanner-side installation notes.
 
 ## Building the Docker image
