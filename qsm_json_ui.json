@@ -1,0 +1,67 @@
+{
+  "general": {
+    "name": { "en": "iQSM_Plus" },
+    "version": "1.0.4",
+    "vendor": "HMRI Imaging Centre",
+    "information": { "en": "Deep-learning QSM (iQSM+) reconstruction from multi-echo GRE magnitude/phase images." },
+    "id": "iQSMPlus",
+    "regulatory_information": {
+      "device_trade_name": "iQSM_Plus",
+      "production_identifier": "1.0.4",
+      "manufacturer_address": "Kookaburra Circuit Lot 1, New Lambton Heights, NSW, AU, 2305",
+      "made_in": "AU",
+      "manufacture_date": "2026/07/09",
+      "material_number": "iQSM_Plus_1.0.4",
+      "gtin": "00000000000000",
+      "udi": "(00)00000000000000(00)1.0.0",
+      "safety_advices": "Research use only. Not for diagnostic use.",
+      "special_operating_instructions": "Requires a multi-echo GRE acquisition with magnitude and phase image output.",
+      "additional_relevant_information": ""
+    }
+  },
+  "reconstruction": {
+    "transfer_protocol": {
+      "protocol": "ISMRMRD",
+      "version": "1.4.1"
+    },
+    "port": 9002,
+    "emitter": "image",
+    "injector": "image",
+    "can_process_adjustment_data": false,
+    "can_use_gpu": true,
+    "min_count_required_gpus": 0,
+    "min_required_gpu_memory": 8192,
+    "min_required_memory": 16384,
+    "min_count_required_cpu_cores": 4,
+    "content_qualification_type": "RESEARCH"
+  },
+  "parameters": [
+    {
+      "id": "config",
+      "type": "choice",
+      "label": { "en": "config" },
+      "values": [
+        {
+          "id": "qsm",
+          "name": { "en": "qsm" }
+        }
+      ],
+      "default": "qsm",
+      "information": { "en": "Define the config to be executed by MRD server" }
+    },
+    {
+      "id": "customconfig",
+      "label": { "en": "Custom Config" },
+      "type": "string",
+      "information": { "en": "Custom config file not listed in drop-down menu" },
+      "default": ""
+    },
+    {
+      "id": "brainextraction",
+      "type": "boolean",
+      "label": { "en": "Brain Extraction (BET)" },
+      "information": { "en": "Skull-strip the magnitude image with FSL's BET2 before QSM reconstruction, to crop the field of view to brain tissue and suppress non-brain background artifacts." },
+      "default": true
+    }
+  ]
+}

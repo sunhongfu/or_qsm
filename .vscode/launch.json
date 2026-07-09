@@ -20,6 +20,22 @@
             "justMyCode": true,
         },
 
+        // Start server (QSM)
+        {
+            "name": "Start QSM server",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main.py",
+            "args": [
+                "-p", "9020",
+                "-v",
+                "-d", "qsm"
+            ],
+            "console": "integratedTerminal",
+            "consoleTitle": "QSM Server",
+            "justMyCode": true,
+        },
+
         // Run client
         {
             "name": "Run client",

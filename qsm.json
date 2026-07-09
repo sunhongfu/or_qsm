@@ -1,0 +1,6 @@
+{
+  "parameters": {
+    "config": "qsm",
+    "brainextraction": true
+  }
+}

@@ -49,7 +49,9 @@ RUN cd /usr/local/lib && tar -zxvf libismrmrd.tar.gz && rm libismrmrd.tar.gz && 
 COPY --from=mrd_converter /usr/local/bin/siemens_to_ismrmrd  /usr/local/bin/siemens_to_ismrmrd
 
 # Add dependencies for siemens_to_ismrmrd
-RUN apt-get update && apt-get install --no-install-recommends -y libxslt1.1 libhdf5-103 libboost-program-options1.74.0 libpugixml1v5 git dos2unix nano
+# gcc, pkg-config, and libhdf5-dev are needed to build h5py from source on
+# platforms (e.g. linux/arm64) that lack a prebuilt wheel for the pinned h5py version
+RUN apt-get update && apt-get install --no-install-recommends -y libxslt1.1 libhdf5-103 libhdf5-dev pkg-config gcc libboost-program-options1.74.0 libpugixml1v5 git dos2unix nano
 RUN mkdir -p /opt/code
 
 # Tell nano to remember its position from the last time it opened a file

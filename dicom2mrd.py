@@ -249,6 +249,18 @@ def main(args):
 
     print("Creating MRD XML header from file %s" % dsetsAll[0].filename)
     mrdHead = CreateMrdHeader(dsetsAll[0])
+
+    # Capture the full set of echo times (ms) across the dataset -- CreateMrdHeader()
+    # only reads a single TE from the first file, which loses the other echoes for
+    # multi-echo (e.g. multi-echo GRE / QSM) acquisitions
+    try:
+        allEchoTimes = sorted(set(float(dset.EchoTime) for dset in dsetsAll if hasattr(dset, 'EchoTime')))
+        if len(allEchoTimes) > 1:
+            mrdHead.sequenceParameters.TE = allEchoTimes
+            print("Found %d unique echo times (ms): %s" % (len(allEchoTimes), allEchoTimes))
+    except:
+        pass
+
     print(mrdHead.toXML())
 
     imgAll = [None]*len(uSeriesNum)
@@ -280,7 +292,17 @@ def main(args):
         except:
             uTrigTime = np.zeros_like(uSliceLoc)
 
-        print("Series %d has %d images with %d slices and %d phases" % (uSeriesNum[iSer], len(dsets), len(uSliceLoc), len(uTrigTime)))
+        # Build a list of unique echo numbers/times, as the MRD contrast counter
+        # indexes into these.  Needed for multi-echo (e.g. QSM) acquisitions.
+        try:
+            uEchoNum = np.unique([int(dset.EchoNumbers) for dset in dsets])
+        except:
+            try:
+                uEchoNum = np.unique([dset.EchoTime for dset in dsets])
+            except:
+                uEchoNum = np.zeros(1)
+
+        print("Series %d has %d images with %d slices, %d phases, and %d echoes" % (uSeriesNum[iSer], len(dsets), len(uSliceLoc), len(uTrigTime), len(uEchoNum)))
 
         for iImg in range(len(dsets)):
             tmpDset = dsets[iImg]
@@ -347,7 +369,20 @@ def main(args):
                 pass
 
             try:
-                tmpMeta['ImageType'] = tmpDset.ImageType
+                tmpMrdImg.contrast               = uEchoNum.tolist().index(int(tmpDset.EchoNumbers))
+            except:
+                try:
+                    tmpMrdImg.contrast           = uEchoNum.tolist().index(tmpDset.EchoTime)
+                except:
+                    pass
+
+            try:
+                # tmpDset.ImageType is a pydicom MultiValue, not a plain list -- ismrmrd.Meta
+                # only recognizes actual `list` instances as multi-valued, so without this
+                # cast it gets serialized as a single stringified-list value (e.g.
+                # "['ORIGINAL', 'PRIMARY', 'M']"), which is invalid for DICOM's CS VR
+                # (16-char limit) when mrd2dicom.py later writes it back out.
+                tmpMeta['ImageType'] = list(tmpDset.ImageType)
             except:
                 pass
 
@@ -367,6 +402,26 @@ def main(args):
                 pass
 
             tmpMeta['SequenceDescription'] = tmpDset.SeriesDescription
+
+            try:
+                tmpMeta['EchoTime'] = float(tmpDset.EchoTime)  # milliseconds, per-image redundant copy
+            except:
+                pass
+
+            # Explicit voxel geometry, to sidestep the row/column mismatch between
+            # CalcFieldOfView() and matrixSize.x/y for non-square matrices
+            try:
+                tmpMeta['PixelSpacing']   = [float(x) for x in tmpDset.PixelSpacing]  # [row spacing, column spacing] mm
+                tmpMeta['SliceThickness'] = float(tmpDset.SliceThickness)             # mm
+            except:
+                pass
+
+            # Needed to convert Siemens phase DICOMs (typically 12-bit, 0-4095) to radians
+            try:
+                tmpMeta['RescaleSlope']     = float(tmpDset.RescaleSlope)
+                tmpMeta['RescaleIntercept'] = float(tmpDset.RescaleIntercept)
+            except:
+                pass
 
             # Remove pixel data from pydicom class before serializing metadata
             if hasattr(tmpDset, 'PixelData'):
