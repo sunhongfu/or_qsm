@@ -34,6 +34,21 @@
             "justMyCode": true,
         },
 
+        // Attach to QSM server (workaround for "launch" mode failing silently under
+        // Rosetta/QEMU-emulated amd64 devcontainers on Apple Silicon -- start the server
+        // manually first with:
+        //   python3 -m debugpy --listen 0.0.0.0:5678 --wait-for-client main.py -p 9020 -v -d qsm
+        // then run this config to connect. Attach mode doesn't need the DAP adapter to both
+        // spawn *and* trace the child process in one step, unlike "launch" mode, which
+        // seems to be the specific part that breaks under emulation.
+        {
+            "name": "Attach to QSM server",
+            "type": "debugpy",
+            "request": "attach",
+            "connect": { "host": "localhost", "port": 5678 },
+            "justMyCode": true,
+        },
+
         // Run client
         {
             "name": "Run client",
