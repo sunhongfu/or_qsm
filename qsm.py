@@ -365,11 +365,20 @@ def _should_run_brain_extraction(config):
     `configAdditional` / `module.process(connection, configAdditional, metadata)`. Falls
     back to True (matching qsm_json_ui.json's own default) if config isn't in that dict
     shape, e.g. when testing locally via client.py without the JSON config message.
+
+    Does NOT just `bool(...)` the raw value -- confirmed on real scanner runs that Open
+    Recon's Injector sends this UI checkbox's value as the *string* "false" (not a native
+    JSON false), and `bool("false")` is True in Python (any non-empty string is truthy),
+    which silently ran brain extraction unconditionally regardless of the toggle. Handles
+    both native bools and their string spellings explicitly instead.
     """
     try:
-        return bool(config['parameters'].get('brainextraction', True))
+        value = config['parameters'].get('brainextraction', True)
     except (TypeError, KeyError, AttributeError):
         return True
+    if isinstance(value, str):
+        return value.strip().lower() not in ('false', '0', '')
+    return bool(value)
 
 
 def _run_bet2(mag_nii_path, output_dir, fractional_intensity=0.5):
@@ -645,11 +654,24 @@ def process_qsm(buffer, connection, config, metadata):
     # regardless of the source data's sign -- the same convention already
     # used for the input phase images (RescaleSlope=2, RescaleIntercept=-4096
     # in the original scanner DICOMs).
+    #
+    # QSM_PIXEL_MAX = 4095 (12-bit), not 65535 (16-bit): confirmed on a real
+    # scanner export that Open Recon's Injector writes MR-derived images as
+    # BitsAllocated=16 but BitsStored=12/HighBit=11 -- a fixed Siemens
+    # convention for this image type that we can't change from here. Values
+    # we send above 4095 don't get clipped/rescaled by the Injector, they get
+    # silently truncated to their low 12 bits, which corrupts almost
+    # everything (a near-zero-ppm voxel encodes to raw~32768 = 0x8000 under
+    # the old 65535 scheme, whose low 12 bits are 0 -- collapsing most of the
+    # image to exactly RescaleIntercept, i.e. -4 ppm, on real hardware).
+    # Quantizing into 0..4095 up front means our own values already fit
+    # inside whatever the Injector actually preserves.
     # ------------------------------------------------------------------
     QSM_DISPLAY_RANGE_PPM = 4.0  # clip/quantize over [-4, +4] ppm
+    QSM_PIXEL_MAX = 4095  # 12-bit -- see rationale above
     rescaleIntercept = -QSM_DISPLAY_RANGE_PPM
-    rescaleSlope     = (2.0 * QSM_DISPLAY_RANGE_PPM) / 65535.0
-    qsmVol_quantized = np.clip(np.round((qsmVol - rescaleIntercept) / rescaleSlope), 0, 65535).astype(np.uint16)
+    rescaleSlope     = (2.0 * QSM_DISPLAY_RANGE_PPM) / QSM_PIXEL_MAX
+    qsmVol_quantized = np.clip(np.round((qsmVol - rescaleIntercept) / rescaleSlope), 0, QSM_PIXEL_MAX).astype(np.uint16)
 
     chi_min = float(qsmVol.min())
     chi_max = float(qsmVol.max())
@@ -698,9 +720,13 @@ def process_qsm(buffer, connection, config, metadata):
         tmpMeta['ImageComments']                 = 'QSM (ppm), iQSM+'
         # WindowCenter/WindowWidth are in real-world (rescaled) ppm units per DICOM
         # convention -- VOI windowing is applied after the RescaleSlope/Intercept
-        # (Modality LUT) transform, not to the raw quantized pixel values.
+        # (Modality LUT) transform, not to the raw quantized pixel values. Confirmed on a
+        # real scanner export that a fractional WindowWidth ('0.6') doesn't survive Open
+        # Recon's Injector -- came back as WindowWidth=0 (no usable default window at all),
+        # consistent with the Injector truncating it to an integer rather than applying it
+        # as a real-valued DICOM DS. Using whole-number ppm values avoids that ambiguity.
         tmpMeta['WindowCenter']                  = '0'
-        tmpMeta['WindowWidth']                   = '0.6'
+        tmpMeta['WindowWidth']                   = '1'
         # DICOM's DS (Decimal String) value representation caps field length at 16
         # characters -- plain str(float) can exceed that (e.g. for small slopes in
         # scientific notation), so format explicitly rather than relying on repr.
