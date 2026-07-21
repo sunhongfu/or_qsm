@@ -630,8 +630,23 @@ def process_qsm(buffer, connection, config, metadata):
     qsmStack = np.stack(qsmVolumes, axis=-1)
     teWeights = (magVol * np.array(te_sec, dtype=np.float32).reshape(1, 1, 1, -1)) ** 2
     teWeightsSum = teWeights.sum(axis=-1)
-    teWeightsSum[teWeightsSum == 0] = 1.0
-    qsmVol = ((teWeights * qsmStack).sum(axis=-1) / teWeightsSum).astype(np.float32)
+    # Guard against dividing by a *near*-zero (not just exactly-zero) denominator --
+    # confirmed as the actual cause of a real scanner artifact: at image edges/background
+    # (air, weak MR signal), magVol is typically tiny but essentially never exactly 0.0 in
+    # real acquired data (thermal noise floor), so the old `teWeightsSum == 0` check let
+    # tiny-but-nonzero denominators through, amplifying numerator noise into wildly
+    # extreme susceptibility values that then clipped to exactly -4ppm at the display
+    # stage -- visible as a hard-edged, incorrect band at the image boundary. Voxels below
+    # a small relative threshold (no reliable signal to combine) are set to 0 ppm directly
+    # instead of dividing by a near-zero number.
+    weightThreshold = float(teWeightsSum.max()) * 1e-3
+    reliableVoxels = teWeightsSum > weightThreshold
+    qsmVol = np.zeros(teWeightsSum.shape, dtype=np.float32)
+    qsmVol[reliableVoxels] = ((teWeights * qsmStack).sum(axis=-1) / teWeightsSum)[reliableVoxels]
+    logging.info("Multi-echo combination: %d of %d voxels (%.1f%%) below weight threshold "
+                 "(insufficient signal to combine) -- set to 0 ppm instead of divided",
+                 int((~reliableVoxels).sum()), teWeightsSum.size,
+                 100.0 * (~reliableVoxels).sum() / teWeightsSum.size)
     np.save(os.path.join(debugFolder, "qsmVol.npy"), qsmVol)
 
     # ------------------------------------------------------------------
