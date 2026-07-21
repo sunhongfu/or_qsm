@@ -185,3 +185,5 @@ For context when debugging — a quick recap of the architecture from local test
   (`MRD_MESSAGE_CONFIG_FILE`, `MRD_MESSAGE_METADATA_XML_TEXT`, one `MRD_MESSAGE_IMAGE` per
   image, `MRD_MESSAGE_CLOSE`) that `client.py` sends during local testing — the server-side code
   can't distinguish a real scan from an offline test.
+
+
