@@ -265,6 +265,9 @@ def main(args):
                 if meta.get('RescaleSlope') is not None:
                     dicomDset.RescaleSlope = meta['RescaleSlope']
 
+                if meta.get('RescaleType') is not None:
+                    dicomDset.RescaleType = meta['RescaleType']
+
                 if meta.get('WindowCenter') is not None:
                     dicomDset.WindowCenter = meta['WindowCenter']
 

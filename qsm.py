@@ -688,6 +688,21 @@ def process_qsm(buffer, connection, config, metadata):
     rescaleSlope     = (2.0 * QSM_DISPLAY_RANGE_PPM) / QSM_PIXEL_MAX
     qsmVol_quantized = np.clip(np.round((qsmVol - rescaleIntercept) / rescaleSlope), 0, QSM_PIXEL_MAX).astype(np.uint16)
 
+    # The DICOM-facing RescaleSlope/Intercept (and WindowCenter/Width below) report
+    # values in ppb (ppm * 1000), not ppm directly -- confirmed on the real scanner that
+    # its window/level adjustment tool has coarse (effectively integer-only) granularity
+    # in whatever real-world unit RescaleSlope/Intercept report, so a genuine ppm-scale
+    # window (e.g. WindowWidth=1) only has a handful of distinct adjustable positions
+    # across the whole clinically-relevant range -- nowhere near enough for usable
+    # mouse-based adjustment (compare magnitude images, whose real-world W/L values are
+    # naturally in the hundreds-to-thousands, since RescaleSlope~1 there). This doesn't
+    # change any pixel data or the true value any voxel represents, only the *units* a
+    # DICOM viewer reports/adjusts it in -- RescaleType is set to PPB below so anything
+    # that respects it knows the units changed.
+    DICOM_UNIT_SCALE = 1000.0  # ppm -> ppb
+    dicomRescaleSlope     = rescaleSlope * DICOM_UNIT_SCALE
+    dicomRescaleIntercept = rescaleIntercept * DICOM_UNIT_SCALE
+
     chi_min = float(qsmVol.min())
     chi_max = float(qsmVol.max())
     n_clipped = int(np.sum((qsmVol < -QSM_DISPLAY_RANGE_PPM) | (qsmVol > QSM_DISPLAY_RANGE_PPM)))
@@ -732,21 +747,23 @@ def process_qsm(buffer, connection, config, metadata):
         # rather than passing it through unchanged.
         tmpMeta['ImageType']                     = ['DERIVED', 'SECONDARY', 'M']
         tmpMeta['SequenceDescriptionAdditional'] = 'QSM'
-        tmpMeta['ImageComments']                 = 'QSM (ppm), iQSM+'
-        # WindowCenter/WindowWidth are in real-world (rescaled) ppm units per DICOM
-        # convention -- VOI windowing is applied after the RescaleSlope/Intercept
-        # (Modality LUT) transform, not to the raw quantized pixel values. Confirmed on a
-        # real scanner export that a fractional WindowWidth ('0.6') doesn't survive Open
-        # Recon's Injector -- came back as WindowWidth=0 (no usable default window at all),
+        tmpMeta['ImageComments']                 = 'QSM (ppb = ppm*1e3), iQSM+'
+        # WindowCenter/WindowWidth are in real-world (rescaled) units per DICOM convention
+        # -- VOI windowing is applied after the RescaleSlope/Intercept (Modality LUT)
+        # transform, not to the raw quantized pixel values. Confirmed on a real scanner
+        # export that a fractional WindowWidth ('0.6') doesn't survive Open Recon's
+        # Injector -- came back as WindowWidth=0 (no usable default window at all),
         # consistent with the Injector truncating it to an integer rather than applying it
-        # as a real-valued DICOM DS. Using whole-number ppm values avoids that ambiguity.
+        # as a real-valued DICOM DS. Values are in ppb (see DICOM_UNIT_SCALE above), not
+        # ppm, so a "1 ppm"-wide window is expressed here as 1000.
         tmpMeta['WindowCenter']                  = '0'
-        tmpMeta['WindowWidth']                   = '1'
+        tmpMeta['WindowWidth']                   = "{:.0f}".format(1.0 * DICOM_UNIT_SCALE)
         # DICOM's DS (Decimal String) value representation caps field length at 16
         # characters -- plain str(float) can exceed that (e.g. for small slopes in
         # scientific notation), so format explicitly rather than relying on repr.
-        tmpMeta['RescaleSlope']                  = "{:.6e}".format(rescaleSlope)
-        tmpMeta['RescaleIntercept']               = "{:.6f}".format(rescaleIntercept)
+        tmpMeta['RescaleSlope']                  = "{:.6e}".format(dicomRescaleSlope)
+        tmpMeta['RescaleIntercept']               = "{:.6f}".format(dicomRescaleIntercept)
+        tmpMeta['RescaleType']                    = 'PPB'
         tmpMeta['Keep_image_geometry']            = 1
 
         if tmpMeta.get('ImageRowDir') is None:
