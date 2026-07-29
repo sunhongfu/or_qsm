@@ -1,17 +1,17 @@
 {
   "general": {
     "name": { "en": "iQSM_Plus" },
-    "version": "1.0.9",
+    "version": "1.0.10",
     "vendor": "HMRI Imaging Centre",
     "information": { "en": "Deep-learning QSM (iQSM+) reconstruction from multi-echo GRE magnitude/phase images." },
     "id": "iQSMPlus",
     "regulatory_information": {
       "device_trade_name": "iQSM_Plus",
-      "production_identifier": "1.0.9",
+      "production_identifier": "1.0.10",
       "manufacturer_address": "Kookaburra Circuit Lot 1, New Lambton Heights, NSW, AU, 2305",
       "made_in": "AU",
-      "manufacture_date": "2026/07/24",
-      "material_number": "iQSM_Plus_1.0.9",
+      "manufacture_date": "2026/07/29",
+      "material_number": "iQSM_Plus_1.0.10",
       "gtin": "00000000000000",
       "udi": "(00)00000000000000(00)1.0.0",
       "safety_advices": "Research use only. Not for diagnostic use.",
@@ -57,11 +57,25 @@
       "default": ""
     },
     {
-      "id": "brainextraction",
-      "type": "boolean",
-      "label": { "en": "Brain Extraction (BET)" },
-      "information": { "en": "Skull-strip the magnitude image with FSL's BET2 before QSM reconstruction, to crop the field of view to brain tissue and suppress non-brain background artifacts." },
-      "default": true
+      "id": "qsmoutput",
+      "type": "choice",
+      "label": { "en": "QSM Output" },
+      "values": [
+        {
+          "id": "both",
+          "name": { "en": "Whole-head + Brain-extracted (both)" }
+        },
+        {
+          "id": "masked",
+          "name": { "en": "Brain-extracted only" }
+        },
+        {
+          "id": "wholehead",
+          "name": { "en": "Whole-head only" }
+        }
+      ],
+      "default": "both",
+      "information": { "en": "Choose which QSM map(s) to reconstruct: whole-head only, brain-extracted only (skull-stripped via FSL's BET2, suppressing non-brain background artifacts), or both as separate series. 'Both' runs the iQSM+ network twice (once per input) and roughly doubles reconstruction time." }
     }
   ]
 }

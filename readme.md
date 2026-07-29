@@ -25,7 +25,7 @@ A Siemens [Open Recon](https://www.siemens-healthineers.com/magnetic-resonance-i
    - Optionally runs FSL's `bet2` on the first echo to get a brain mask (toggle: [UI parameters](#ui-parameters)).
    - Calls into [iQSM_Plus](https://github.com/sunhongfu/iQSM_Plus) (`run_iqsm_plus()`, cloned locally as a gitignored subfolder of this repo -- see [Building the Docker image](#building-the-docker-image) -- rather than tracked in this repo's own git history) to run the actual deep-learning reconstruction.
    - Quantizes the resulting susceptibility map (ppm) into uint16 DICOM pixel data with a fixed rescale slope/intercept.
-4. Both the QSM map (`image_series_index=100`) **and** the original acquisition series are sent back unmodified -- Open Recon only saves/displays images an app explicitly returns, so passing through the originals is what keeps them from being silently discarded.
+4. Both the QSM map(s) -- brain-extracted (`image_series_index=100`) and/or whole-head (`image_series_index=101`), per the "QSM Output" UI parameter -- **and** the original acquisition series are sent back unmodified -- Open Recon only saves/displays images an app explicitly returns, so passing through the originals is what keeps them from being silently discarded.
 
 ## Repository layout
 

@@ -357,28 +357,24 @@ def _get_te_seconds(phaseKeys, nEchoes, metadata):
     return [t / 1000.0 for t in te_ms]
 
 
-def _should_run_brain_extraction(config):
-    """Read the 'brainextraction' Open Recon UI boolean parameter (default True).
+def _get_qsm_output_mode(config):
+    """Read the 'qsmoutput' Open Recon UI choice parameter (default 'both').
 
-    server.py passes the full parsed JSON config dict (not just the resolved config
-    string) through as this function's `config` argument -- see server.py's
-    `configAdditional` / `module.process(connection, configAdditional, metadata)`. Falls
-    back to True (matching qsm_json_ui.json's own default) if config isn't in that dict
-    shape, e.g. when testing locally via client.py without the JSON config message.
-
-    Does NOT just `bool(...)` the raw value -- confirmed on real scanner runs that Open
-    Recon's Injector sends this UI checkbox's value as the *string* "false" (not a native
-    JSON false), and `bool("false")` is True in Python (any non-empty string is truthy),
-    which silently ran brain extraction unconditionally regardless of the toggle. Handles
-    both native bools and their string spellings explicitly instead.
+    Returns one of 'both', 'masked', 'wholehead'. server.py passes the full parsed JSON
+    config dict (not just the resolved config string) through as this function's `config`
+    argument -- see server.py's `configAdditional` / `module.process(connection,
+    configAdditional, metadata)`. Falls back to 'both' (matching qsm_json_ui.json's own
+    default) if config isn't in that dict shape (e.g. testing locally via client.py
+    without the JSON config message) or the value doesn't match a known option -- same
+    fail-safe spirit as the old boolean toggle this replaced (see git history), just with
+    a wider set of fallback triggers since there are now 3 valid strings instead of 2.
     """
     try:
-        value = config['parameters'].get('brainextraction', True)
+        value = config['parameters'].get('qsmoutput', 'both')
     except (TypeError, KeyError, AttributeError):
-        return True
-    if isinstance(value, str):
-        return value.strip().lower() not in ('false', '0', '')
-    return bool(value)
+        return 'both'
+    value = str(value).strip().lower()
+    return value if value in ('both', 'masked', 'wholehead') else 'both'
 
 
 def _run_bet2(mag_nii_path, output_dir, fractional_intensity=0.5):
@@ -566,18 +562,33 @@ def process_qsm(buffer, connection, config, metadata):
     affine = np.diag(voxel_mm + [1.0])
 
     # ------------------------------------------------------------------
-    # Optional brain extraction (FSL's bet2), toggled by the 'Brain Extraction (BET)'
-    # Open Recon UI parameter (default on -- see qsm_json_ui.json). bet2 needs a plain
-    # 3D volume, not the 4D multi-echo array saved above, so run it on the first echo
-    # only -- the resulting mask is reused for every echo by run_iqsm_plus.
+    # Which QSM output(s) to produce, per the 'QSM Output' Open Recon UI choice
+    # parameter (default 'both' -- see qsm_json_ui.json). These are genuinely two
+    # different network inputs, not one output post-processed into two: iQSM+'s phase
+    # input is masked *before* inference (phase = phase * mask, matching the MATLAB
+    # reference's Save_Input_iQSMplus.m), so there's no way to derive the brain-extracted
+    # result from the whole-head result (or vice versa) after the fact -- 'both' means
+    # running the full echo loop and network inference twice, roughly doubling
+    # reconstruction time versus either mode alone.
     # ------------------------------------------------------------------
+    outputMode = _get_qsm_output_mode(config)
+    needMasked = outputMode in ('both', 'masked')
+    needWholehead = outputMode in ('both', 'wholehead')
+
+    # bet2 needs a plain 3D volume, not the 4D multi-echo array saved above, so run it on
+    # the first echo only -- the resulting mask is reused for every echo below.
     maskPath = None
-    if _should_run_brain_extraction(config):
+    if needMasked:
         mag3dPath = os.path.join(debugFolder, "mag_echo0_for_bet2.nii.gz")
         nib.save(nib.Nifti1Image(magVol[..., 0], affine), mag3dPath)
         maskPath = _run_bet2(mag3dPath, debugFolder)
+        if maskPath is None:
+            logging.warning("Brain-extracted QSM output was requested but bet2 failed/was "
+                             "unavailable -- skipping the brain-extracted series")
+            needMasked = False
+            needWholehead = True  # still return at least one QSM series
     else:
-        logging.info("Brain extraction disabled via 'brainextraction' UI parameter")
+        logging.info("Whole-head-only QSM output selected -- skipping brain extraction")
 
     # run_iqsm_plus() processes a single echo per call -- multi-echo combination
     # is handled externally by the caller, exactly as iQSM_Plus's own run.py /
@@ -595,59 +606,85 @@ def process_qsm(buffer, connection, config, metadata):
     # raise an exception from inside that call, _MemoryHeartbeat logs memory on a
     # background thread every few seconds *during* the call, so the last few
     # heartbeats before a future kill will show how memory was trending.
-    inferenceStart = perf_counter()
-    qsmVolumes = []
-    try:
-        with _MemoryHeartbeat("during run_iqsm_plus"):
-            for echo in range(nEchoes):
-                echoPhasePath = os.path.join(debugFolder, "phase_echo%d.nii.gz" % echo)
-                echoMagPath   = os.path.join(debugFolder, "mag_echo%d.nii.gz" % echo)
-                nib.save(nib.Nifti1Image(phaseVol[..., echo], affine), echoPhasePath)
-                nib.save(nib.Nifti1Image(magVol[..., echo],   affine), echoMagPath)
+    def _reconstruct_qsm(maskNiiPath, label):
+        """Run iQSM+ across all echoes with the given brain mask (None for whole-head,
+        unmasked reconstruction) and combine echoes into one susceptibility volume.
+        `label` disambiguates debug output/log lines when this runs twice (both-mode).
+        """
+        inferenceStart = perf_counter()
+        qsmVolumes = []
+        try:
+            with _MemoryHeartbeat("during run_iqsm_plus (%s)" % label):
+                for echo in range(nEchoes):
+                    echoPhasePath = os.path.join(debugFolder, "phase_echo%d.nii.gz" % echo)
+                    echoMagPath   = os.path.join(debugFolder, "mag_echo%d.nii.gz" % echo)
+                    nib.save(nib.Nifti1Image(phaseVol[..., echo], affine), echoPhasePath)
+                    nib.save(nib.Nifti1Image(magVol[..., echo],   affine), echoMagPath)
 
-                logging.info("Running iQSM+ on echo %d/%d (TE=%.4f s)", echo + 1, nEchoes, te_sec[echo])
-                echoQsmPath = run_iqsm_plus(
-                    phase_nii_path=echoPhasePath,
-                    te=float(te_sec[echo]),
-                    mag_nii_path=echoMagPath,
-                    mask_nii_path=maskPath,
-                    voxel_size=voxel_mm,
-                    b0_dir=b0_dir,
-                    b0=b0_tesla,
-                    output_dir=os.path.join(debugFolder, "echo%d_output" % echo),
-                )
-                qsmVolumes.append(nib.load(echoQsmPath).get_fdata(dtype=np.float32))
-    except CheckpointNotFoundError as e:
-        raise Exception("iQSM+ model checkpoints not found: %s" % e)
-    except Exception:
-        logging.error("run_iqsm_plus() raised after %.1f s:\n%s",
-                      perf_counter() - inferenceStart, traceback.format_exc())
-        raise
-    logging.info("run_iqsm_plus() completed %d echo(es) in %.1f s", nEchoes, perf_counter() - inferenceStart)
+                    logging.info("Running iQSM+ (%s) on echo %d/%d (TE=%.4f s)",
+                                 label, echo + 1, nEchoes, te_sec[echo])
+                    echoQsmPath = run_iqsm_plus(
+                        phase_nii_path=echoPhasePath,
+                        te=float(te_sec[echo]),
+                        mag_nii_path=echoMagPath,
+                        mask_nii_path=maskNiiPath,
+                        voxel_size=voxel_mm,
+                        b0_dir=b0_dir,
+                        b0=b0_tesla,
+                        output_dir=os.path.join(debugFolder, "%s_echo%d_output" % (label, echo)),
+                    )
+                    qsmVolumes.append(nib.load(echoQsmPath).get_fdata(dtype=np.float32))
+        except CheckpointNotFoundError as e:
+            raise Exception("iQSM+ model checkpoints not found: %s" % e)
+        except Exception:
+            logging.error("run_iqsm_plus() (%s) raised after %.1f s:\n%s",
+                          label, perf_counter() - inferenceStart, traceback.format_exc())
+            raise
+        logging.info("run_iqsm_plus() (%s) completed %d echo(es) in %.1f s",
+                     label, nEchoes, perf_counter() - inferenceStart)
 
-    # Magnitude x TE^2 weighted average across echoes -- mirrors iQSM_Plus's own
-    # run.py:_run_multi_echo() combiner exactly.
-    qsmStack = np.stack(qsmVolumes, axis=-1)
-    teWeights = (magVol * np.array(te_sec, dtype=np.float32).reshape(1, 1, 1, -1)) ** 2
-    teWeightsSum = teWeights.sum(axis=-1)
-    # Guard against dividing by a *near*-zero (not just exactly-zero) denominator --
-    # confirmed as the actual cause of a real scanner artifact: at image edges/background
-    # (air, weak MR signal), magVol is typically tiny but essentially never exactly 0.0 in
-    # real acquired data (thermal noise floor), so the old `teWeightsSum == 0` check let
-    # tiny-but-nonzero denominators through, amplifying numerator noise into wildly
-    # extreme susceptibility values that then clipped to exactly -4ppm at the display
-    # stage -- visible as a hard-edged, incorrect band at the image boundary. Voxels below
-    # a small relative threshold (no reliable signal to combine) are set to 0 ppm directly
-    # instead of dividing by a near-zero number.
-    weightThreshold = float(teWeightsSum.max()) * 1e-3
-    reliableVoxels = teWeightsSum > weightThreshold
-    qsmVol = np.zeros(teWeightsSum.shape, dtype=np.float32)
-    qsmVol[reliableVoxels] = ((teWeights * qsmStack).sum(axis=-1) / teWeightsSum)[reliableVoxels]
-    logging.info("Multi-echo combination: %d of %d voxels (%.1f%%) below weight threshold "
-                 "(insufficient signal to combine) -- set to 0 ppm instead of divided",
-                 int((~reliableVoxels).sum()), teWeightsSum.size,
-                 100.0 * (~reliableVoxels).sum() / teWeightsSum.size)
-    np.save(os.path.join(debugFolder, "qsmVol.npy"), qsmVol)
+        # Magnitude x TE^2 weighted average across echoes -- mirrors iQSM_Plus's own
+        # run.py:_run_multi_echo() combiner exactly.
+        qsmStack = np.stack(qsmVolumes, axis=-1)
+        teWeights = (magVol * np.array(te_sec, dtype=np.float32).reshape(1, 1, 1, -1)) ** 2
+        teWeightsSum = teWeights.sum(axis=-1)
+        # Guard against dividing by a *near*-zero (not just exactly-zero) denominator --
+        # confirmed as the actual cause of a real scanner artifact: at image edges/background
+        # (air, weak MR signal), magVol is typically tiny but essentially never exactly 0.0 in
+        # real acquired data (thermal noise floor), so the old `teWeightsSum == 0` check let
+        # tiny-but-nonzero denominators through, amplifying numerator noise into wildly
+        # extreme susceptibility values that then clipped to exactly -4ppm at the display
+        # stage -- visible as a hard-edged, incorrect band at the image boundary. Voxels below
+        # a small relative threshold (no reliable signal to combine) are set to 0 ppm directly
+        # instead of dividing by a near-zero number.
+        weightThreshold = float(teWeightsSum.max()) * 1e-3
+        reliableVoxels = teWeightsSum > weightThreshold
+        qsmVol = np.zeros(teWeightsSum.shape, dtype=np.float32)
+        qsmVol[reliableVoxels] = ((teWeights * qsmStack).sum(axis=-1) / teWeightsSum)[reliableVoxels]
+        logging.info("Multi-echo combination (%s): %d of %d voxels (%.1f%%) below weight threshold "
+                     "(insufficient signal to combine) -- set to 0 ppm instead of divided",
+                     label, int((~reliableVoxels).sum()), teWeightsSum.size,
+                     100.0 * (~reliableVoxels).sum() / teWeightsSum.size)
+        np.save(os.path.join(debugFolder, "qsmVol_%s.npy" % label), qsmVol)
+        return qsmVol
+
+    # (label, image_series_index, SequenceDescriptionAdditional, ImageComments, qsmVol).
+    # image_series_index=100 is kept for the brain-extracted series specifically (not
+    # reassigned to whichever mode happens to run first) for backward compatibility --
+    # 100 was the only QSM series index this app ever produced before this change
+    # (readme.md and RunQSMRecon.ipynb both already document/rely on "image_100" =
+    # the QSM map), and brain extraction defaulted on before 'qsmoutput' existed, so
+    # existing tooling that assumes image_series_index=100 keeps working unmodified for
+    # anyone still on 'masked' or 'both' mode. 101 is the new whole-head series.
+    qsmResults = []
+    if needWholehead:
+        qsmResults.append(("wholehead", 101, "QSM_WHOLEHEAD",
+                            "QSM whole-head (ppb = ppm*1e3), iQSM+",
+                            _reconstruct_qsm(None, "wholehead")))
+    if needMasked:
+        qsmResults.append(("masked", 100, "QSM_MASKED",
+                            "QSM brain-extracted (ppb = ppm*1e3), iQSM+",
+                            _reconstruct_qsm(maskPath, "masked")))
 
     # ------------------------------------------------------------------
     # Quantize the signed float ppm values into an unsigned 16-bit integer
@@ -686,7 +723,6 @@ def process_qsm(buffer, connection, config, metadata):
     QSM_PIXEL_MAX = 4095  # 12-bit -- see rationale above
     rescaleIntercept = -QSM_DISPLAY_RANGE_PPM
     rescaleSlope     = (2.0 * QSM_DISPLAY_RANGE_PPM) / QSM_PIXEL_MAX
-    qsmVol_quantized = np.clip(np.round((qsmVol - rescaleIntercept) / rescaleSlope), 0, QSM_PIXEL_MAX).astype(np.uint16)
 
     # The DICOM-facing RescaleSlope/Intercept (and WindowCenter/Width below) report
     # values in ppb (ppm * 1000), not ppm directly -- confirmed on the real scanner that
@@ -703,76 +739,82 @@ def process_qsm(buffer, connection, config, metadata):
     dicomRescaleSlope     = rescaleSlope * DICOM_UNIT_SCALE
     dicomRescaleIntercept = rescaleIntercept * DICOM_UNIT_SCALE
 
-    chi_min = float(qsmVol.min())
-    chi_max = float(qsmVol.max())
-    n_clipped = int(np.sum((qsmVol < -QSM_DISPLAY_RANGE_PPM) | (qsmVol > QSM_DISPLAY_RANGE_PPM)))
-    if n_clipped > 0:
-        logging.warning("%d of %d voxels fell outside +/-%.1f ppm and were clipped",
-                         n_clipped, qsmVol.size, QSM_DISPLAY_RANGE_PPM)
-    logging.info("QSM value range [%.4f, %.4f] ppm -> quantized to uint16 over fixed [-%.1f, %.1f] ppm "
-                 "(RescaleSlope=%.8g, RescaleIntercept=%.4f)",
-                 chi_min, chi_max, QSM_DISPLAY_RANGE_PPM, QSM_DISPLAY_RANGE_PPM, rescaleSlope, rescaleIntercept)
-
     toc = perf_counter()
     strProcessTime = "QSM reconstruction time: %.2f s" % (toc - tic)
     logging.info(strProcessTime)
     connection.send_logging(constants.MRD_LOGGING_INFO, strProcessTime)
 
     # ------------------------------------------------------------------
-    # Re-slice the 3D susceptibility map back into individual 2D MRD images,
+    # Re-slice each 3D susceptibility map back into individual 2D MRD images,
     # matching the granularity ICE expects for its per-slice DICOM pipeline
     # (see the earlier "2D vs 3D streaming" discussion). Geometry/header for
-    # each slice is copied from that slice's first-echo magnitude image.
+    # each slice is copied from that slice's first-echo magnitude image. One
+    # full pass here per requested QSM output (1 or 2), each as its own series.
     # ------------------------------------------------------------------
     imagesOut = []
-    for sl in range(nSlices):
-        templateImg = magKeys.get((sl, 0)) or phaseKeys.get((sl, 0))
-        if templateImg is None:
-            continue
+    for label, seriesIndex, seqDescAdditional, imageComments, qsmVol in qsmResults:
+        qsmVol_quantized = np.clip(np.round((qsmVol - rescaleIntercept) / rescaleSlope),
+                                    0, QSM_PIXEL_MAX).astype(np.uint16)
 
-        qsmImg = ismrmrd.Image.from_array(qsmVol_quantized[:, :, sl], transpose=False)
+        chi_min = float(qsmVol.min())
+        chi_max = float(qsmVol.max())
+        n_clipped = int(np.sum((qsmVol < -QSM_DISPLAY_RANGE_PPM) | (qsmVol > QSM_DISPLAY_RANGE_PPM)))
+        if n_clipped > 0:
+            logging.warning("(%s) %d of %d voxels fell outside +/-%.1f ppm and were clipped",
+                             label, n_clipped, qsmVol.size, QSM_DISPLAY_RANGE_PPM)
+        logging.info("(%s) QSM value range [%.4f, %.4f] ppm -> quantized to uint16 over fixed "
+                     "[-%.1f, %.1f] ppm (RescaleSlope=%.8g, RescaleIntercept=%.4f)",
+                     label, chi_min, chi_max, QSM_DISPLAY_RANGE_PPM, QSM_DISPLAY_RANGE_PPM,
+                     rescaleSlope, rescaleIntercept)
 
-        oldHeader = templateImg.getHead()
-        oldHeader.data_type          = qsmImg.getHead().data_type
-        oldHeader.image_type         = ismrmrd.IMTYPE_MAGNITUDE
-        oldHeader.image_index        = sl + 1
-        oldHeader.image_series_index = 100
-        qsmImg.setHead(oldHeader)
+        for sl in range(nSlices):
+            templateImg = magKeys.get((sl, 0)) or phaseKeys.get((sl, 0))
+            if templateImg is None:
+                continue
 
-        tmpMeta = ismrmrd.Meta.deserialize(templateImg.attribute_string)
-        tmpMeta['DataRole']                      = 'Image'
-        tmpMeta['ImageProcessingHistory']        = ['PYTHON', 'IQSM_PLUS']
-        # QSM is computed/derived data, not the original acquisition -- override the
-        # inherited magnitude template's ImageType (['ORIGINAL', 'PRIMARY', 'M', ...])
-        # rather than passing it through unchanged.
-        tmpMeta['ImageType']                     = ['DERIVED', 'SECONDARY', 'M']
-        tmpMeta['SequenceDescriptionAdditional'] = 'QSM'
-        tmpMeta['ImageComments']                 = 'QSM (ppb = ppm*1e3), iQSM+'
-        # WindowCenter/WindowWidth are in real-world (rescaled) units per DICOM convention
-        # -- VOI windowing is applied after the RescaleSlope/Intercept (Modality LUT)
-        # transform, not to the raw quantized pixel values. Confirmed on a real scanner
-        # export that a fractional WindowWidth ('0.6') doesn't survive Open Recon's
-        # Injector -- came back as WindowWidth=0 (no usable default window at all),
-        # consistent with the Injector truncating it to an integer rather than applying it
-        # as a real-valued DICOM DS. Values are in ppb (see DICOM_UNIT_SCALE above), not
-        # ppm, so a "1 ppm"-wide window is expressed here as 1000.
-        tmpMeta['WindowCenter']                  = '0'
-        tmpMeta['WindowWidth']                   = "{:.0f}".format(1.0 * DICOM_UNIT_SCALE)
-        # DICOM's DS (Decimal String) value representation caps field length at 16
-        # characters -- plain str(float) can exceed that (e.g. for small slopes in
-        # scientific notation), so format explicitly rather than relying on repr.
-        tmpMeta['RescaleSlope']                  = "{:.6e}".format(dicomRescaleSlope)
-        tmpMeta['RescaleIntercept']               = "{:.6f}".format(dicomRescaleIntercept)
-        tmpMeta['RescaleType']                    = 'PPB'
-        tmpMeta['Keep_image_geometry']            = 1
+            qsmImg = ismrmrd.Image.from_array(qsmVol_quantized[:, :, sl], transpose=False)
 
-        if tmpMeta.get('ImageRowDir') is None:
-            tmpMeta['ImageRowDir'] = ["{:.18f}".format(oldHeader.read_dir[0]), "{:.18f}".format(oldHeader.read_dir[1]), "{:.18f}".format(oldHeader.read_dir[2])]
-        if tmpMeta.get('ImageColumnDir') is None:
-            tmpMeta['ImageColumnDir'] = ["{:.18f}".format(oldHeader.phase_dir[0]), "{:.18f}".format(oldHeader.phase_dir[1]), "{:.18f}".format(oldHeader.phase_dir[2])]
+            oldHeader = templateImg.getHead()
+            oldHeader.data_type          = qsmImg.getHead().data_type
+            oldHeader.image_type         = ismrmrd.IMTYPE_MAGNITUDE
+            oldHeader.image_index        = sl + 1
+            oldHeader.image_series_index = seriesIndex
+            qsmImg.setHead(oldHeader)
 
-        qsmImg.attribute_string = tmpMeta.serialize()
-        imagesOut.append(qsmImg)
+            tmpMeta = ismrmrd.Meta.deserialize(templateImg.attribute_string)
+            tmpMeta['DataRole']                      = 'Image'
+            tmpMeta['ImageProcessingHistory']        = ['PYTHON', 'IQSM_PLUS']
+            # QSM is computed/derived data, not the original acquisition -- override the
+            # inherited magnitude template's ImageType (['ORIGINAL', 'PRIMARY', 'M', ...])
+            # rather than passing it through unchanged.
+            tmpMeta['ImageType']                     = ['DERIVED', 'SECONDARY', 'M']
+            tmpMeta['SequenceDescriptionAdditional'] = seqDescAdditional
+            tmpMeta['ImageComments']                 = imageComments
+            # WindowCenter/WindowWidth are in real-world (rescaled) units per DICOM convention
+            # -- VOI windowing is applied after the RescaleSlope/Intercept (Modality LUT)
+            # transform, not to the raw quantized pixel values. Confirmed on a real scanner
+            # export that a fractional WindowWidth ('0.6') doesn't survive Open Recon's
+            # Injector -- came back as WindowWidth=0 (no usable default window at all),
+            # consistent with the Injector truncating it to an integer rather than applying it
+            # as a real-valued DICOM DS. Values are in ppb (see DICOM_UNIT_SCALE above), not
+            # ppm, so a "1 ppm"-wide window is expressed here as 1000.
+            tmpMeta['WindowCenter']                  = '0'
+            tmpMeta['WindowWidth']                   = "{:.0f}".format(1.0 * DICOM_UNIT_SCALE)
+            # DICOM's DS (Decimal String) value representation caps field length at 16
+            # characters -- plain str(float) can exceed that (e.g. for small slopes in
+            # scientific notation), so format explicitly rather than relying on repr.
+            tmpMeta['RescaleSlope']                  = "{:.6e}".format(dicomRescaleSlope)
+            tmpMeta['RescaleIntercept']               = "{:.6f}".format(dicomRescaleIntercept)
+            tmpMeta['RescaleType']                    = 'PPB'
+            tmpMeta['Keep_image_geometry']            = 1
+
+            if tmpMeta.get('ImageRowDir') is None:
+                tmpMeta['ImageRowDir'] = ["{:.18f}".format(oldHeader.read_dir[0]), "{:.18f}".format(oldHeader.read_dir[1]), "{:.18f}".format(oldHeader.read_dir[2])]
+            if tmpMeta.get('ImageColumnDir') is None:
+                tmpMeta['ImageColumnDir'] = ["{:.18f}".format(oldHeader.phase_dir[0]), "{:.18f}".format(oldHeader.phase_dir[1]), "{:.18f}".format(oldHeader.phase_dir[2])]
+
+            qsmImg.attribute_string = tmpMeta.serialize()
+            imagesOut.append(qsmImg)
 
     # ------------------------------------------------------------------
     # Pass through every originally-received image (all magnitude series,
