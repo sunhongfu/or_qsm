@@ -1,6 +1,6 @@
 # OpenRecon QSM (iQSM+)
 
-A Siemens [Open Recon](https://www.siemens-healthineers.com/magnetic-resonance-imaging/options-and-upgrades/open-recon) app that reconstructs quantitative susceptibility maps (QSM) from multi-echo GRE magnitude/phase images, using [iQSM+](https://github.com/sunhongfu/iQSM_Plus), a deep-learning QSM pipeline. Runs on the scanner as a Docker container, invoked via Siemens' image-to-image (i2i) Open Recon workflow.
+A Siemens [Open Recon](https://www.siemens-healthineers.com/magnetic-resonance-imaging/options-and-upgrades/open-recon) app that reconstructs quantitative susceptibility maps (QSM) and R2* maps from multi-echo GRE magnitude/phase images, using [iQSM+](https://github.com/sunhongfu/iQSM_Plus) (QSM) and [DeepRelaxo](https://github.com/sunhongfu/DeepRelaxo) (R2*), both deep-learning pipelines. Runs on the scanner as a Docker container, invoked via Siemens' image-to-image (i2i) Open Recon workflow.
 
 **Built on top of [kspaceKelvin/python-ismrmrd-server](https://github.com/kspaceKelvin/python-ismrmrd-server)** (MIT licensed, see [LICENSE](LICENSE)), a reference MRD client/server framework for building modular MRI reconstruction/analysis pipelines. That repo's own README documents the underlying framework in depth (module structure, client/server protocol, generic Docker setup) -- worth reading for background, but not duplicated here.
 
@@ -22,15 +22,17 @@ A Siemens [Open Recon](https://www.siemens-healthineers.com/magnetic-resonance-i
 1. The scan operator runs a multi-echo 3D GRE sequence with magnitude + phase output, with this app selected on the Open Recon card.
 2. Siemens' Emitter functor streams the reconstructed magnitude/phase images to the container over MRD ([qsm.py](qsm.py)'s `process()`).
 3. [qsm.py](qsm.py) buffers every image (QSM needs the whole 3D multi-echo volume, not one image at a time -- see the module's own docstring), then:
-   - Optionally runs FSL's `bet2` on the first echo to get a brain mask (toggle: [UI parameters](#ui-parameters)).
-   - Calls into [iQSM_Plus](https://github.com/sunhongfu/iQSM_Plus) (`run_iqsm_plus()`, cloned locally as a gitignored subfolder of this repo -- see [Building the Docker image](#building-the-docker-image) -- rather than tracked in this repo's own git history) to run the actual deep-learning reconstruction.
-   - Quantizes the resulting susceptibility map (ppm) into uint16 DICOM pixel data with a fixed rescale slope/intercept.
-4. Both the QSM map(s) -- brain-extracted (`image_series_index=100`) and/or whole-head (`image_series_index=101`), per the "QSM Output" UI parameter -- **and** the original acquisition series are sent back unmodified -- Open Recon only saves/displays images an app explicitly returns, so passing through the originals is what keeps them from being silently discarded.
+   - Optionally runs FSL's `bet2` on the first echo to get a brain mask, per the "QSM Output" UI parameter's whole-head/brain-extracted/both selection (see [UI parameters](#ui-parameters)).
+   - Calls into [iQSM_Plus](https://github.com/sunhongfu/iQSM_Plus) (`run_iqsm_plus()`, cloned locally as a gitignored subfolder of this repo -- see [Building the Docker image](#building-the-docker-image) -- rather than tracked in this repo's own git history) to run the actual deep-learning QSM reconstruction.
+   - If the "Compute R2* Mapping" UI parameter is on (default), also calls into [DeepRelaxo](https://github.com/sunhongfu/DeepRelaxo) (`estimate_r2s()` + `denoise_r2s_map()`, same gitignored-subfolder pattern) to run its two-stage R2* mapping, reusing the same magnitude NIfTIs and bet2 mask already prepared for QSM -- no separate brain extraction.
+   - Quantizes the resulting maps (ppm for QSM, s⁻¹ for R2*) into uint16 DICOM pixel data with fixed rescale slopes/intercepts.
+4. All requested maps -- QSM brain-extracted (`image_series_index=100`) and/or whole-head (`101`), R2* brain-extracted (`102`) and/or whole-head (`103`), per the "QSM Output"/"Compute R2* Mapping" UI parameters -- **and** the original acquisition series are sent back unmodified -- Open Recon only saves/displays images an app explicitly returns, so passing through the originals is what keeps them from being silently discarded.
 
 ## Repository layout
 
-- [qsm.py](qsm.py) -- the QSM reconstruction module itself (the `config` this server runs; see `--defaultConfig=qsm` in the Dockerfile `CMD`).
+- [qsm.py](qsm.py) -- the QSM/R2* reconstruction module itself (the `config` this server runs; see `--defaultConfig=qsm` in the Dockerfile `CMD`).
 - `iQSM_Plus/` -- **not tracked in this repo** (gitignored); a local clone of [sunhongfu/iQSM_Plus](https://github.com/sunhongfu/iQSM_Plus) that you create yourself before building -- see [Building the Docker image](#building-the-docker-image).
+- `DeepRelaxo/` -- **not tracked in this repo** (gitignored); a local clone of [sunhongfu/DeepRelaxo](https://github.com/sunhongfu/DeepRelaxo) (R2* mapping), same as `iQSM_Plus/` above.
 - [vendor/bet2/](vendor/bet2/) -- FSL's `bet2` binary + its ~15 runtime shared libraries, vendored directly (not a full FSL install).
 - [docker/qsm.dockerfile](docker/qsm.dockerfile) -- builds the deployable image. `docker/qsm-cuda-conda.dockerfile` is kept as a rollback to the original conda-based build (larger, ~8.7GB vs ~6.3GB) if the slim pip-based one ever misbehaves.
 - [docker/build_openrecon_package.py](docker/build_openrecon_package.py) -- packages the built image + `docs.pdf` into the `.zip` Open Recon expects for scanner installation.
@@ -72,6 +74,20 @@ for name in ['iQSM_plus.pth', 'LoTLayer_chi.pth']:
         urllib.request.urlretrieve(f'{base}/{name}', local)
 "
 
+# Same one-time step for DeepRelaxo (R2* mapping) -- same gitignored-subfolder pattern,
+# same plain-urllib download (its own `run_deeprelaxo_pipeline.py --download-checkpoints`
+# needs huggingface_hub/pyyaml already installed, same reasoning as iQSM_Plus above).
+git clone https://github.com/sunhongfu/DeepRelaxo.git DeepRelaxo
+mkdir -p DeepRelaxo/checkpoints
+python3 -c "
+import os, urllib.request
+base = 'https://huggingface.co/sunhongfu/DeepRelaxo/resolve/main'
+for name in ['transformer_mlp_epoch_80.pth', 'unet3d_epoch_140.pth']:
+    local = f'DeepRelaxo/checkpoints/{name}'
+    if not os.path.exists(local):
+        urllib.request.urlretrieve(f'{base}/{name}', local)
+"
+
 # --platform linux/amd64 is required on Apple Silicon: the base image (python:3.12-slim)
 # publishes a native arm64 manifest, so without this flag Docker silently builds for
 # arm64 and the CUDA-only torch wheels fail to resolve with a confusing "no matching
@@ -108,7 +124,8 @@ Defined in `qsm_json_ui.json`'s `parameters` array, rendered as the Open Recon c
 |---|---|---|---|
 | `config` | choice | `qsm` | Which module the server dispatches to. |
 | `customconfig` | string | `""` | Override `config` with an arbitrary module name not in the dropdown. |
-| `brainextraction` | boolean | `true` | Run `bet2` on the magnitude image before reconstruction, to crop the field of view to brain tissue and suppress non-brain background artifacts. |
+| `qsmoutput` | choice (`both`/`masked`/`wholehead`) | `both` | Which QSM map(s) to reconstruct: whole-head only, brain-extracted only (`bet2`), or both as separate series. Also controls the R2* output selection below (`r2smapping` reuses this same choice/mask). |
+| `r2smapping` | boolean | `true` | Also run DeepRelaxo's R2* mapping from the same magnitude images, output as additional series alongside QSM. |
 
 Parameter `id`s must match `^[A-Za-z0-9]+$` (no underscores) -- an Open Recon schema constraint.
 
@@ -150,4 +167,4 @@ Per `qsm_json_ui.json`'s `reconstruction` section: GPU optional but supported (`
 
 ## License
 
-This repository's own code is MIT licensed (inherited from the upstream framework, see [LICENSE](LICENSE)). `vendor/bet2/` is FSL's Brain Extraction Tool, separately licensed -- see [vendor/bet2/README.md](vendor/bet2/README.md). The iQSM+ model weights are a separate checkout ([sunhongfu/iQSM_Plus](https://github.com/sunhongfu/iQSM_Plus)) with their own license terms, not tracked in this repo's git history.
+This repository's own code is MIT licensed (inherited from the upstream framework, see [LICENSE](LICENSE)). `vendor/bet2/` is FSL's Brain Extraction Tool, separately licensed -- see [vendor/bet2/README.md](vendor/bet2/README.md). The iQSM+ and DeepRelaxo model weights are separate checkouts ([sunhongfu/iQSM_Plus](https://github.com/sunhongfu/iQSM_Plus), [sunhongfu/DeepRelaxo](https://github.com/sunhongfu/DeepRelaxo)) with their own license terms, not tracked in this repo's git history.

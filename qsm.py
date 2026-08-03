@@ -56,6 +56,38 @@ _BET2_CANDIDATES = [
 BET2_DIR = next((p for p in _BET2_CANDIDATES
                  if p and os.path.isfile(os.path.join(p, "bin", "bet2"))), None)
 
+# DeepRelaxo (https://github.com/sunhongfu/DeepRelaxo) -- R2* mapping, same
+# separate-repo/gitignored-subfolder pattern as IQSM_PLUS_DIR above.
+_DEEPRELAXO_CANDIDATES = [
+    os.environ.get("DEEPRELAXO_DIR"),
+    "/opt/code/python-ismrmrd-server/DeepRelaxo",       # baked into the Docker image
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "DeepRelaxo"),  # local checkout
+]
+DEEPRELAXO_DIR = next((p for p in _DEEPRELAXO_CANDIDATES if p and os.path.isdir(p)), None)
+
+# NOT added to sys.path at module level like IQSM_PLUS_DIR above -- both iQSM_Plus and
+# DeepRelaxo happen to define their own bare top-level `data_utils.py` module (unrelated
+# repos, coincidentally similar layout), and Python caches imports by module name, so
+# having both directories on sys.path simultaneously risks one repo's `import data_utils`
+# silently resolving to the *other* repo's file depending on sys.path order -- a silent
+# wrong-answer bug, not an ImportError, since both define same-named functions with
+# different implementations. iQSM_Plus's inference.py doesn't currently import
+# data_utils itself, but relying on that staying true forever is fragile. _import_deeprelaxo()
+# instead does the sys.path insertion (and a sys.modules cache-bust) right before the one
+# place DeepRelaxo is actually imported, guaranteeing DeepRelaxo's own data_utils.py wins
+# regardless of import order elsewhere in the process.
+def _import_deeprelaxo():
+    if DEEPRELAXO_DIR is None:
+        raise Exception("DeepRelaxo not found (checked $DEEPRELAXO_DIR, "
+                         "/opt/code/python-ismrmrd-server/DeepRelaxo, ./DeepRelaxo)")
+    sys.modules.pop("data_utils", None)
+    if DEEPRELAXO_DIR in sys.path:
+        sys.path.remove(DEEPRELAXO_DIR)
+    sys.path.insert(0, DEEPRELAXO_DIR)
+    from run_estimator_stage import estimate_r2s
+    from run_denoiser_stage import denoise_r2s_map
+    return estimate_r2s, denoise_r2s_map
+
 
 # ----------------------------------------------------------------------------
 # Diagnostics: which device iQSM+ inference actually runs on, and memory usage
@@ -375,6 +407,23 @@ def _get_qsm_output_mode(config):
         return 'both'
     value = str(value).strip().lower()
     return value if value in ('both', 'masked', 'wholehead') else 'both'
+
+
+def _get_r2s_enabled(config):
+    """Read the 'r2smapping' Open Recon UI boolean parameter (default True).
+
+    Same string/bool handling as the old 'brainextraction' toggle this doesn't replace
+    (see _get_qsm_output_mode's docstring) -- Open Recon's Injector has been observed to
+    send boolean UI parameters as the *string* "false", and bool("false") is True in
+    Python, so this must not just bool(...) the raw value.
+    """
+    try:
+        value = config['parameters'].get('r2smapping', True)
+    except (TypeError, KeyError, AttributeError):
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() not in ('false', '0', '')
+    return bool(value)
 
 
 def _run_bet2(mag_nii_path, output_dir, fractional_intensity=0.5):
@@ -739,52 +788,124 @@ def process_qsm(buffer, connection, config, metadata):
     dicomRescaleSlope     = rescaleSlope * DICOM_UNIT_SCALE
     dicomRescaleIntercept = rescaleIntercept * DICOM_UNIT_SCALE
 
+    # ------------------------------------------------------------------
+    # Optional R2* mapping (DeepRelaxo, https://github.com/sunhongfu/DeepRelaxo), gated by
+    # the 'Compute R2* Mapping' Open Recon UI parameter (default on -- see
+    # qsm_json_ui.json). Uses the SAME whole-head/masked/both selection ('qsmoutput') and
+    # the SAME bet2 mask already computed for QSM above -- no separate brain-extraction
+    # run. DeepRelaxo's estimator stage is a per-voxel Transformer-MLP (confirmed:
+    # LayerNorm + Dropout only, no BatchNorm, so it has no cross-voxel/batch-composition
+    # dependence) -- a whole-head estimator pass is therefore exactly reusable to derive
+    # the masked variant by zeroing background before a second (fast) denoiser-only pass,
+    # instead of needing a second full estimator run over the masked-only voxel subset.
+    # Only in 'masked'-only mode (no whole-head pass computed anyway) does it fall back to
+    # letting the estimator itself restrict to the masked voxels directly, which is faster
+    # than computing the whole head only to discard most of it. Reuses the exact
+    # mag_echo{N}.nii.gz files already written by _reconstruct_qsm() above (always written
+    # at least once, regardless of qsmoutput mode) rather than re-saving them.
+    #
+    # Failures here are non-fatal to the QSM output -- caught broadly (covers e.g. a
+    # missing DeepRelaxo checkout/checkpoints) and logged, same fail-soft spirit as bet2
+    # failures above, so a broken R2* dependency never blocks the QSM reconstruction the
+    # rest of this module already validated.
+    # ------------------------------------------------------------------
+    r2sResults = []  # (label, image_series_index, SequenceDescriptionAdditional, ImageComments, r2sVol)
+    if _get_r2s_enabled(config):
+        try:
+            estimate_r2s, denoise_r2s_map = _import_deeprelaxo()
+            magnitude_entries = [{"path": os.path.join(debugFolder, "mag_echo%d.nii.gz" % echo)}
+                                  for echo in range(nEchoes)]
+            te_values_ms = [t * 1000.0 for t in te_sec]
+
+            r2sWholeheadMap = None
+            if needWholehead:
+                r2sTic = perf_counter()
+                # DeepRelaxo's per-voxel estimator has no internal progress logging (unlike
+                # iQSM+'s inference.py) -- a whole-head pass processes every voxel (~8.6M for
+                # a typical 256x192x176 volume) in ~50000-voxel batches with zero console
+                # output in between, which otherwise looks indistinguishable from a hang in
+                # the log. Same _MemoryHeartbeat wrapper as the iQSM+ calls above.
+                with _MemoryHeartbeat("during DeepRelaxo estimator (wholehead)"):
+                    r2sWholeheadMap, _ = estimate_r2s(magnitude_entries=magnitude_entries,
+                                                       te_values_ms=te_values_ms, bet_mask_path=None)
+                r2sWholeheadMap = r2sWholeheadMap.numpy()
+                wholeheadMask = np.ones(r2sWholeheadMap.shape, dtype=bool)
+                r2sWholeheadDenoised = denoise_r2s_map(r2sWholeheadMap, wholeheadMask)
+                logging.info("DeepRelaxo (wholehead) completed in %.1f s", perf_counter() - r2sTic)
+                r2sResults.append(("wholehead", 103, "R2S_WHOLEHEAD",
+                                    "R2* whole-head (s^-1), DeepRelaxo", r2sWholeheadDenoised))
+
+            if needMasked and maskPath is not None:
+                r2sTic = perf_counter()
+                maskArr = nib.load(maskPath).get_fdata() > 0
+                if r2sWholeheadMap is not None:
+                    r2sMaskedMap = r2sWholeheadMap.copy()
+                    r2sMaskedMap[~maskArr] = 0.0
+                    logging.info("DeepRelaxo (masked) derived from whole-head estimator pass "
+                                 "(shared-estimator optimization)")
+                else:
+                    with _MemoryHeartbeat("during DeepRelaxo estimator (masked)"):
+                        r2sMaskedMap, _ = estimate_r2s(magnitude_entries=magnitude_entries,
+                                                        te_values_ms=te_values_ms, bet_mask_path=maskPath)
+                    r2sMaskedMap = r2sMaskedMap.numpy()
+                r2sMaskedDenoised = denoise_r2s_map(r2sMaskedMap, maskArr)
+                logging.info("DeepRelaxo (masked) completed in %.1f s", perf_counter() - r2sTic)
+                r2sResults.append(("masked", 102, "R2S_MASKED",
+                                    "R2* brain-extracted (s^-1), DeepRelaxo", r2sMaskedDenoised))
+        except Exception:
+            logging.error("R2* mapping (DeepRelaxo) failed -- continuing without R2* output:\n%s",
+                          traceback.format_exc())
+
+    # R2* is non-negative and naturally spans tens-to-~100+ s^-1 in brain tissue, unlike
+    # QSM's tiny +/-4ppm range -- no ppb-style unit inflation needed here (see
+    # DICOM_UNIT_SCALE above) for a scanner W/L tool to have usable granularity; reporting
+    # directly in s^-1 already gives a comparably large integer range to magnitude images.
+    # 250 s^-1 was chosen after a real local test run showed values up to ~226 s^-1
+    # (whole-head, uncropped background/edge voxels included) -- a 100 s^-1 ceiling
+    # clipped ~6% of whole-head voxels and ~1.8% of brain-masked voxels at that range.
+    # Tune to your own clinical experience if needed.
+    R2S_DISPLAY_RANGE_MAX = 250.0  # clip/quantize over [0, 250] s^-1
+    R2S_PIXEL_MAX = 4095  # 12-bit, same Injector constraint as QSM (see rationale above)
+    r2sRescaleSlope = R2S_DISPLAY_RANGE_MAX / R2S_PIXEL_MAX
+    r2sRescaleIntercept = 0.0
+
     toc = perf_counter()
     strProcessTime = "QSM reconstruction time: %.2f s" % (toc - tic)
     logging.info(strProcessTime)
     connection.send_logging(constants.MRD_LOGGING_INFO, strProcessTime)
 
     # ------------------------------------------------------------------
-    # Re-slice each 3D susceptibility map back into individual 2D MRD images,
-    # matching the granularity ICE expects for its per-slice DICOM pipeline
-    # (see the earlier "2D vs 3D streaming" discussion). Geometry/header for
-    # each slice is copied from that slice's first-echo magnitude image. One
-    # full pass here per requested QSM output (1 or 2), each as its own series.
+    # Re-slice each 3D map (QSM and/or R2*) back into individual 2D MRD images, matching
+    # the granularity ICE expects for its per-slice DICOM pipeline (see the earlier "2D vs
+    # 3D streaming" discussion). Geometry/header for each slice is copied from that
+    # slice's first-echo magnitude image. One full pass here per requested output series
+    # (1-4, depending on qsmoutput/r2smapping selection), each as its own DICOM series.
     # ------------------------------------------------------------------
     imagesOut = []
-    for label, seriesIndex, seqDescAdditional, imageComments, qsmVol in qsmResults:
-        qsmVol_quantized = np.clip(np.round((qsmVol - rescaleIntercept) / rescaleSlope),
-                                    0, QSM_PIXEL_MAX).astype(np.uint16)
 
-        chi_min = float(qsmVol.min())
-        chi_max = float(qsmVol.max())
-        n_clipped = int(np.sum((qsmVol < -QSM_DISPLAY_RANGE_PPM) | (qsmVol > QSM_DISPLAY_RANGE_PPM)))
-        if n_clipped > 0:
-            logging.warning("(%s) %d of %d voxels fell outside +/-%.1f ppm and were clipped",
-                             label, n_clipped, qsmVol.size, QSM_DISPLAY_RANGE_PPM)
-        logging.info("(%s) QSM value range [%.4f, %.4f] ppm -> quantized to uint16 over fixed "
-                     "[-%.1f, %.1f] ppm (RescaleSlope=%.8g, RescaleIntercept=%.4f)",
-                     label, chi_min, chi_max, QSM_DISPLAY_RANGE_PPM, QSM_DISPLAY_RANGE_PPM,
-                     rescaleSlope, rescaleIntercept)
-
+    def _append_dicom_series(vol, seriesIndex, seqDescAdditional, imageComments,
+                              seriesRescaleSlope, seriesRescaleIntercept, rescaleType,
+                              windowCenter, windowWidth, pixelMax, processingHistory):
+        volQuantized = np.clip(np.round((vol - seriesRescaleIntercept) / seriesRescaleSlope),
+                                0, pixelMax).astype(np.uint16)
         for sl in range(nSlices):
             templateImg = magKeys.get((sl, 0)) or phaseKeys.get((sl, 0))
             if templateImg is None:
                 continue
 
-            qsmImg = ismrmrd.Image.from_array(qsmVol_quantized[:, :, sl], transpose=False)
+            img = ismrmrd.Image.from_array(volQuantized[:, :, sl], transpose=False)
 
             oldHeader = templateImg.getHead()
-            oldHeader.data_type          = qsmImg.getHead().data_type
+            oldHeader.data_type          = img.getHead().data_type
             oldHeader.image_type         = ismrmrd.IMTYPE_MAGNITUDE
             oldHeader.image_index        = sl + 1
             oldHeader.image_series_index = seriesIndex
-            qsmImg.setHead(oldHeader)
+            img.setHead(oldHeader)
 
             tmpMeta = ismrmrd.Meta.deserialize(templateImg.attribute_string)
             tmpMeta['DataRole']                      = 'Image'
-            tmpMeta['ImageProcessingHistory']        = ['PYTHON', 'IQSM_PLUS']
-            # QSM is computed/derived data, not the original acquisition -- override the
+            tmpMeta['ImageProcessingHistory']        = processingHistory
+            # Computed/derived data, not the original acquisition -- override the
             # inherited magnitude template's ImageType (['ORIGINAL', 'PRIMARY', 'M', ...])
             # rather than passing it through unchanged.
             tmpMeta['ImageType']                     = ['DERIVED', 'SECONDARY', 'M']
@@ -796,16 +917,15 @@ def process_qsm(buffer, connection, config, metadata):
             # export that a fractional WindowWidth ('0.6') doesn't survive Open Recon's
             # Injector -- came back as WindowWidth=0 (no usable default window at all),
             # consistent with the Injector truncating it to an integer rather than applying it
-            # as a real-valued DICOM DS. Values are in ppb (see DICOM_UNIT_SCALE above), not
-            # ppm, so a "1 ppm"-wide window is expressed here as 1000.
-            tmpMeta['WindowCenter']                  = '0'
-            tmpMeta['WindowWidth']                   = "{:.0f}".format(1.0 * DICOM_UNIT_SCALE)
+            # as a real-valued DICOM DS -- pass whole numbers only.
+            tmpMeta['WindowCenter']                  = "{:.0f}".format(windowCenter)
+            tmpMeta['WindowWidth']                   = "{:.0f}".format(windowWidth)
             # DICOM's DS (Decimal String) value representation caps field length at 16
             # characters -- plain str(float) can exceed that (e.g. for small slopes in
             # scientific notation), so format explicitly rather than relying on repr.
-            tmpMeta['RescaleSlope']                  = "{:.6e}".format(dicomRescaleSlope)
-            tmpMeta['RescaleIntercept']               = "{:.6f}".format(dicomRescaleIntercept)
-            tmpMeta['RescaleType']                    = 'PPB'
+            tmpMeta['RescaleSlope']                  = "{:.6e}".format(seriesRescaleSlope)
+            tmpMeta['RescaleIntercept']               = "{:.6f}".format(seriesRescaleIntercept)
+            tmpMeta['RescaleType']                    = rescaleType
             tmpMeta['Keep_image_geometry']            = 1
 
             if tmpMeta.get('ImageRowDir') is None:
@@ -813,13 +933,44 @@ def process_qsm(buffer, connection, config, metadata):
             if tmpMeta.get('ImageColumnDir') is None:
                 tmpMeta['ImageColumnDir'] = ["{:.18f}".format(oldHeader.phase_dir[0]), "{:.18f}".format(oldHeader.phase_dir[1]), "{:.18f}".format(oldHeader.phase_dir[2])]
 
-            qsmImg.attribute_string = tmpMeta.serialize()
-            imagesOut.append(qsmImg)
+            img.attribute_string = tmpMeta.serialize()
+            imagesOut.append(img)
+
+    for label, seriesIndex, seqDescAdditional, imageComments, qsmVol in qsmResults:
+        chi_min = float(qsmVol.min())
+        chi_max = float(qsmVol.max())
+        n_clipped = int(np.sum((qsmVol < -QSM_DISPLAY_RANGE_PPM) | (qsmVol > QSM_DISPLAY_RANGE_PPM)))
+        if n_clipped > 0:
+            logging.warning("(%s) %d of %d voxels fell outside +/-%.1f ppm and were clipped",
+                             label, n_clipped, qsmVol.size, QSM_DISPLAY_RANGE_PPM)
+        logging.info("(%s) QSM value range [%.4f, %.4f] ppm -> quantized to uint16 over fixed "
+                     "[-%.1f, %.1f] ppm (RescaleSlope=%.8g, RescaleIntercept=%.4f)",
+                     label, chi_min, chi_max, QSM_DISPLAY_RANGE_PPM, QSM_DISPLAY_RANGE_PPM,
+                     rescaleSlope, rescaleIntercept)
+        _append_dicom_series(qsmVol, seriesIndex, seqDescAdditional, imageComments,
+                              dicomRescaleSlope, dicomRescaleIntercept, 'PPB',
+                              windowCenter=0.0, windowWidth=1.0 * DICOM_UNIT_SCALE,
+                              pixelMax=QSM_PIXEL_MAX, processingHistory=['PYTHON', 'IQSM_PLUS'])
+
+    for label, seriesIndex, seqDescAdditional, imageComments, r2sVol in r2sResults:
+        r2s_min = float(r2sVol.min())
+        r2s_max = float(r2sVol.max())
+        n_clipped = int(np.sum(r2sVol > R2S_DISPLAY_RANGE_MAX))
+        if n_clipped > 0:
+            logging.warning("(%s) %d of %d voxels exceeded %.1f s^-1 and were clipped",
+                             label, n_clipped, r2sVol.size, R2S_DISPLAY_RANGE_MAX)
+        logging.info("(%s) R2* value range [%.4f, %.4f] s^-1 -> quantized to uint16 over fixed "
+                     "[0, %.1f] s^-1 (RescaleSlope=%.8g)",
+                     label, r2s_min, r2s_max, R2S_DISPLAY_RANGE_MAX, r2sRescaleSlope)
+        _append_dicom_series(r2sVol, seriesIndex, seqDescAdditional, imageComments,
+                              r2sRescaleSlope, r2sRescaleIntercept, 'R2S',
+                              windowCenter=R2S_DISPLAY_RANGE_MAX / 2, windowWidth=R2S_DISPLAY_RANGE_MAX,
+                              pixelMax=R2S_PIXEL_MAX, processingHistory=['PYTHON', 'DEEPRELAXO'])
 
     # ------------------------------------------------------------------
     # Pass through every originally-received image (all magnitude series,
     # all echoes, phase) unmodified, as their own series alongside the new
-    # QSM map. Per Open Recon's documented behavior, only images explicitly
+    # QSM/R2* maps. Per Open Recon's documented behavior, only images explicitly
     # returned by the app are saved to DICOM/displayed on the scanner -- the
     # standard ICE-reconstructed images are NOT automatically preserved
     # (see or_sdk/README.md: "only images that are returned by the Open
@@ -828,12 +979,13 @@ def process_qsm(buffer, connection, config, metadata):
     # acquisition series would simply be discarded, not left untouched.
     # These are the exact objects received from the Emitter -- only their
     # .data/.attribute_string were read (never mutated) when building the
-    # QSM volumes/output above, so returning them here reproduces the same
+    # QSM/R2* volumes/output above, so returning them here reproduces the same
     # DICOMs the scanner would have produced without Open Recon involved.
     # ------------------------------------------------------------------
-    nQsmImages = len(imagesOut)
+    nDerivedImages = len(imagesOut)
     imagesOut.extend(buffer.values())
 
-    logging.info("Returning %d QSM image(s) + %d original image(s) = %d total",
-                 nQsmImages, len(buffer), len(imagesOut))
+    logging.info("Returning %d QSM/R2* image(s) (%d QSM series, %d R2* series) + "
+                 "%d original image(s) = %d total",
+                 nDerivedImages, len(qsmResults), len(r2sResults), len(buffer), len(imagesOut))
     return imagesOut

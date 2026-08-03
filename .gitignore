@@ -20,3 +20,7 @@ OpenRecon_package/
 # into this subfolder rather than being tracked here -- see readme.md's "Building the
 # Docker image" section. Its own .git/ is harmless as long as it stays ignored here.
 iQSM_Plus/
+
+# DeepRelaxo (R2* mapping, https://github.com/sunhongfu/DeepRelaxo) -- same pattern as
+# iQSM_Plus above: cloned locally into this subfolder rather than tracked here.
+DeepRelaxo/

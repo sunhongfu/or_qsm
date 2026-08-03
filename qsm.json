@@ -1,6 +1,7 @@
 {
   "parameters": {
     "config": "qsm",
-    "qsmoutput": "both"
+    "qsmoutput": "both",
+    "r2smapping": true
   }
 }

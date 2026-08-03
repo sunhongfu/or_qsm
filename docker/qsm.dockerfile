@@ -32,8 +32,14 @@
 #   git clone https://github.com/sunhongfu/iQSM_Plus.git iQSM_Plus
 #   # ... then download iQSM_plus.pth and LoTLayer_chi.pth into iQSM_Plus/checkpoints/
 #
-# This also means `iQSM_Plus/` is covered by the live-edit bind-mount in
-# .vscode/tasks.json's "Start QSM server (Docker)" task -- edit its code, restart the
+# Same one-time step for DeepRelaxo (R2* mapping, https://github.com/sunhongfu/DeepRelaxo)
+# -- its checkpoint download is a script command rather than a manual file grab:
+#
+#   git clone https://github.com/sunhongfu/DeepRelaxo.git DeepRelaxo
+#   python3 DeepRelaxo/run_deeprelaxo_pipeline.py --download-checkpoints
+#
+# This also means `iQSM_Plus/` and `DeepRelaxo/` are covered by the live-edit bind-mount in
+# .vscode/tasks.json's "Start QSM server (Docker)" task -- edit their code, restart the
 # task, no rebuild needed, same as qsm.py.
 #
 # Step 2: build. --platform linux/amd64 is required explicitly on Apple Silicon hosts:
@@ -133,11 +139,14 @@ RUN cd /opt/code && \
 # matplotlib is used by rgb.py and provides various visualization tools including colormaps
 # pydicom is used by dicom2mrd.py to parse DICOM data
 # nibabel/scipy are used by the iQSM+ pipeline
+# pyyaml/huggingface_hub are DeepRelaxo's own requirements.txt deps beyond what's already
+# here (its checkpoint auto-download and YAML config support respectively) -- everything
+# else in DeepRelaxo's requirements.txt (nibabel, scipy, h5py, numpy) is already covered
 #
 # Unpinned so pip's resolver picks numpy-2-compatible builds matching the
 # torch install above (torch pulls in numpy>=2, incompatible with the
 # numpy<2-era h5py==3.10.0 pinned just above -- upgrading afterward fixes it).
-RUN pip3 install --no-cache-dir --upgrade matplotlib h5py pydicom==3.0.1 nibabel scipy
+RUN pip3 install --no-cache-dir --upgrade matplotlib h5py pydicom==3.0.1 nibabel scipy pyyaml huggingface_hub
 
 # Cleanup files not required after installation
 RUN apt-get clean && \
@@ -183,6 +192,22 @@ RUN test -f "$IQSM_PLUS_DIR/inference.py" || \
 RUN test -f "$IQSM_PLUS_DIR/checkpoints/iQSM_plus.pth" && \
     test -f "$IQSM_PLUS_DIR/checkpoints/LoTLayer_chi.pth" || \
     { echo "ERROR: iQSM_Plus checkpoints not found under $IQSM_PLUS_DIR/checkpoints -- see" \
+           "readme.md's 'Building the Docker image' section (download them before building)." >&2; \
+      exit 1; }
+
+# DeepRelaxo (R2* mapping) -- same arrived-via-`COPY .`-above / fail-loudly-if-missing
+# pattern as iQSM_Plus above, nested under python-ismrmrd-server's own path for the same
+# live-edit bind-mount reason.
+ENV DEEPRELAXO_DIR=/opt/code/python-ismrmrd-server/DeepRelaxo
+
+RUN test -f "$DEEPRELAXO_DIR/run_estimator_stage.py" || \
+    { echo "ERROR: DeepRelaxo not found at $DEEPRELAXO_DIR -- see readme.md's 'Building the" \
+           "Docker image' section (git clone DeepRelaxo into this repo first)." >&2; \
+      exit 1; }
+
+RUN test -f "$DEEPRELAXO_DIR/checkpoints/transformer_mlp_epoch_80.pth" && \
+    test -f "$DEEPRELAXO_DIR/checkpoints/unet3d_epoch_140.pth" || \
+    { echo "ERROR: DeepRelaxo checkpoints not found under $DEEPRELAXO_DIR/checkpoints -- see" \
            "readme.md's 'Building the Docker image' section (download them before building)." >&2; \
       exit 1; }
 
