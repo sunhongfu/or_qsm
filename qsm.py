@@ -106,20 +106,12 @@ def _get_ui_param(config, key, default):
         return default
 
 
-def _get_qsm_output_mode(config):
-    """Which QSM map(s) to produce: 'both' (default), 'masked', or 'wholehead'."""
-    value = str(_get_ui_param(config, 'qsmoutput', 'both')).strip().lower()
-    return value if value in ('both', 'masked', 'wholehead') else 'both'
-
-
-def _get_r2s_enabled(config):
-    """Whether to also compute R2* mapping (default True). Does not just bool(...) the
-    raw value -- Open Recon's Injector has been observed to send boolean UI parameters as
-    the *string* "false", and bool("false") is True in Python."""
-    value = _get_ui_param(config, 'r2smapping', True)
-    if isinstance(value, str):
-        return value.strip().lower() not in ('false', '0', '')
-    return bool(value)
+def _get_recon_mode(config):
+    """Which mask variant to reconstruct: 'masked' (default, brain-extracted via bet2) or
+    'wholehead'. Applies to both QSM and R2* -- there is no longer a way to get both
+    variants from a single exam; re-run with the other mode if needed."""
+    value = str(_get_ui_param(config, 'reconmode', 'masked')).strip().lower()
+    return value if value in ('masked', 'wholehead') else 'masked'
 
 
 # ==============================================================================
@@ -463,35 +455,45 @@ def process_qsm(buffer, connection, config, metadata):
     affine = np.diag(voxel_mm + [1.0])
 
     # ------------------------------------------------------------------
-    # Which QSM output(s) to produce, per the 'QSM Output' UI parameter (default 'both').
-    # Brain-extracted and whole-head are genuinely two different network inputs, not one
-    # output post-processed into two: iQSM+ masks its phase input *before* inference
-    # (phase = phase * mask, matching the MATLAB reference), so 'both' means running the
-    # full echo loop and network inference twice.
+    # Which mask variant to reconstruct, per the 'Reconstruction Mode' UI parameter
+    # (default 'masked'). Applies to both QSM and R2* below -- a single exam only ever
+    # produces one variant; re-run with the other mode (e.g. via retro-recon, if your
+    # OpenRecon deployment supports it) to get the other one.
     # ------------------------------------------------------------------
-    outputMode = _get_qsm_output_mode(config)
-    needMasked = outputMode in ('both', 'masked')
-    needWholehead = outputMode in ('both', 'wholehead')
+    reconMode = _get_recon_mode(config)
+    useMask = reconMode == 'masked'
 
     maskPath = None
-    if needMasked:
+    if useMask:
         # bet2 needs a plain 3D volume, not the 4D multi-echo array -- run it on the
         # first echo only, the resulting mask is reused for every echo below.
         mag3dPath = os.path.join(debugFolder, "mag_echo0_for_bet2.nii.gz")
         nib.save(nib.Nifti1Image(magVol[..., 0], affine), mag3dPath)
         maskPath = _run_bet2(mag3dPath, debugFolder)
         if maskPath is None:
-            logging.warning("Brain-extracted QSM output was requested but bet2 failed/was "
-                             "unavailable -- skipping the brain-extracted series")
-            needMasked = False
-            needWholehead = True  # still return at least one QSM series
+            logging.warning("Brain-masked reconstruction was requested but bet2 failed/was "
+                             "unavailable -- falling back to whole-head")
+            useMask = False
     else:
-        logging.info("Whole-head-only QSM output selected -- skipping brain extraction")
+        logging.info("Whole-head reconstruction mode selected -- skipping brain extraction")
 
-    def _reconstruct_qsm(maskNiiPath, label):
+    # image_series_index=100/102 (QSM/R2*) are reserved for the brain-masked variant
+    # specifically -- 100 is the series index this app has always used for QSM, and
+    # existing tooling (readme.md, RunQSMRecon.ipynb) assumes it. 101/103 are whole-head.
+    if useMask:
+        label, qsmSeriesIndex, r2sSeriesIndex = "masked", 100, 102
+        qsmSeqDesc, r2sSeqDesc = "QSM_MASKED", "R2S_MASKED"
+        qsmComment = "QSM brain-extracted (ppb = ppm*1e3), iQSM+"
+        r2sComment = "R2* brain-extracted (s^-1), DeepRelaxo"
+    else:
+        label, qsmSeriesIndex, r2sSeriesIndex = "wholehead", 101, 103
+        qsmSeqDesc, r2sSeqDesc = "QSM_WHOLEHEAD", "R2S_WHOLEHEAD"
+        qsmComment = "QSM whole-head (ppb = ppm*1e3), iQSM+"
+        r2sComment = "R2* whole-head (s^-1), DeepRelaxo"
+
+    def _reconstruct_qsm(maskNiiPath):
         """Run iQSM+ across all echoes with the given brain mask (None for whole-head,
         unmasked reconstruction) and combine echoes into one susceptibility volume (ppm).
-        `label` disambiguates debug output/log lines when this runs twice (both-mode).
 
         run_iqsm_plus() processes a single echo per call -- multi-echo combination is
         handled externally here, exactly as iQSM_Plus's own run.py/app.py do. Model
@@ -555,43 +557,22 @@ def process_qsm(buffer, connection, config, metadata):
         np.save(os.path.join(debugFolder, "qsmVol_%s.npy" % label), qsmVol)
         return qsmVol
 
-    # image_series_index=100 is reserved for the brain-extracted series specifically (not
-    # reassigned to whichever mode happens to run first): it's the series index this app
-    # has always used for QSM, and existing tooling (readme.md, RunQSMRecon.ipynb) assumes
-    # it. 101 is whole-head.
-    qsmResults = []  # (label, image_series_index, SequenceDescriptionAdditional, ImageComments, qsmVol_ppm)
-    if needWholehead:
-        qsmResults.append(("wholehead", 101, "QSM_WHOLEHEAD",
-                            "QSM whole-head (ppb = ppm*1e3), iQSM+",
-                            _reconstruct_qsm(None, "wholehead")))
-    if needMasked:
-        qsmResults.append(("masked", 100, "QSM_MASKED",
-                            "QSM brain-extracted (ppb = ppm*1e3), iQSM+",
-                            _reconstruct_qsm(maskPath, "masked")))
+    # (label, image_series_index, SequenceDescriptionAdditional, ImageComments, qsmVol_ppm)
+    qsmResults = [(label, qsmSeriesIndex, qsmSeqDesc, qsmComment, _reconstruct_qsm(maskPath))]
 
     def _run_r2s_mapping():
-        """Optional R2* mapping (DeepRelaxo), gated by the 'Compute R2* Mapping' UI
-        parameter (default on). Uses the SAME whole-head/masked/both selection
-        ('qsmoutput') and the SAME bet2 mask already computed for QSM above -- no
-        separate brain-extraction run. Reuses the exact mag_echo{N}.nii.gz files already
-        written by _reconstruct_qsm() above (always written at least once, regardless of
-        qsmoutput mode) rather than re-saving them.
-
-        DeepRelaxo's estimator stage is a per-voxel Transformer-MLP (LayerNorm + Dropout
-        only, no BatchNorm -- confirmed no cross-voxel/batch-composition dependence), so a
-        whole-head estimator pass is exactly reusable to derive the masked variant by
-        zeroing background before a second (fast) denoiser-only pass, instead of running a
-        second full estimator pass over the masked-only voxel subset. Only in 'masked'-
-        only mode (no whole-head pass computed anyway) does it fall back to letting the
-        estimator itself restrict to the masked voxels directly, which is faster than
-        computing the whole head only to discard most of it.
-
-        Failures here are non-fatal to the QSM output -- caught broadly (covers e.g. a
-        missing DeepRelaxo checkout/checkpoints) and logged, so a broken R2* dependency
-        never blocks the QSM reconstruction the rest of this module already validated.
+        """R2* mapping (DeepRelaxo), using the same mask variant as QSM above and the exact
+        mag_echo{N}.nii.gz files already written by _reconstruct_qsm() (no separate
+        brain-extraction run). Requires at least 2 echoes to fit a decay curve -- this is
+        not a user-facing toggle, just automatically skipped (QSM-only output) for
+        single-echo acquisitions. Failures here are non-fatal to the QSM output -- caught
+        broadly (covers e.g. a missing DeepRelaxo checkout/checkpoints) and logged, so a
+        broken R2* dependency never blocks the QSM reconstruction the rest of this module
+        already validated.
         """
         r2sResults = []  # (label, image_series_index, SequenceDescriptionAdditional, ImageComments, r2sVol)
-        if not _get_r2s_enabled(config):
+        if nEchoes < 2:
+            logging.info("R2* mapping skipped -- requires at least 2 echoes (got %d)", nEchoes)
             return r2sResults
 
         try:
@@ -600,34 +581,14 @@ def process_qsm(buffer, connection, config, metadata):
                                   for echo in range(nEchoes)]
             te_values_ms = [t * 1000.0 for t in te_sec]
 
-            r2sWholeheadMap = None
-            if needWholehead:
-                r2sTic = perf_counter()
-                r2sWholeheadMap, _ = estimate_r2s(magnitude_entries=magnitude_entries,
-                                                   te_values_ms=te_values_ms, bet_mask_path=None)
-                r2sWholeheadMap = r2sWholeheadMap.numpy()
-                wholeheadMask = np.ones(r2sWholeheadMap.shape, dtype=bool)
-                r2sWholeheadDenoised = denoise_r2s_map(r2sWholeheadMap, wholeheadMask)
-                logging.info("DeepRelaxo (wholehead) completed in %.1f s", perf_counter() - r2sTic)
-                r2sResults.append(("wholehead", 103, "R2S_WHOLEHEAD",
-                                    "R2* whole-head (s^-1), DeepRelaxo", r2sWholeheadDenoised))
-
-            if needMasked and maskPath is not None:
-                r2sTic = perf_counter()
-                maskArr = nib.load(maskPath).get_fdata() > 0
-                if r2sWholeheadMap is not None:
-                    r2sMaskedMap = r2sWholeheadMap.copy()
-                    r2sMaskedMap[~maskArr] = 0.0
-                    logging.info("DeepRelaxo (masked) derived from whole-head estimator pass "
-                                 "(shared-estimator optimization)")
-                else:
-                    r2sMaskedMap, _ = estimate_r2s(magnitude_entries=magnitude_entries,
-                                                    te_values_ms=te_values_ms, bet_mask_path=maskPath)
-                    r2sMaskedMap = r2sMaskedMap.numpy()
-                r2sMaskedDenoised = denoise_r2s_map(r2sMaskedMap, maskArr)
-                logging.info("DeepRelaxo (masked) completed in %.1f s", perf_counter() - r2sTic)
-                r2sResults.append(("masked", 102, "R2S_MASKED",
-                                    "R2* brain-extracted (s^-1), DeepRelaxo", r2sMaskedDenoised))
+            r2sTic = perf_counter()
+            r2sMap, _ = estimate_r2s(magnitude_entries=magnitude_entries, te_values_ms=te_values_ms,
+                                      bet_mask_path=maskPath if useMask else None)
+            r2sMap = r2sMap.numpy()
+            maskArr = (nib.load(maskPath).get_fdata() > 0) if useMask else np.ones(r2sMap.shape, dtype=bool)
+            r2sDenoised = denoise_r2s_map(r2sMap, maskArr)
+            logging.info("DeepRelaxo (%s) completed in %.1f s", label, perf_counter() - r2sTic)
+            r2sResults.append((label, r2sSeriesIndex, r2sSeqDesc, r2sComment, r2sDenoised))
         except Exception:
             logging.error("R2* mapping (DeepRelaxo) failed -- continuing without R2* output:\n%s",
                           traceback.format_exc())

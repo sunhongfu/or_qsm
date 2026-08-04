@@ -13,6 +13,7 @@ A Siemens [Open Recon](https://www.siemens-healthineers.com/magnetic-resonance-i
 - [Packaging for scanner deployment](#packaging-for-scanner-deployment)
 - [UI parameters](#ui-parameters)
 - [Local testing](#local-testing)
+- [Offline batch reconstruction](#offline-batch-reconstruction)
 - [Diagnostics](#diagnostics)
 - [Requirements](#requirements)
 - [License](#license)
@@ -22,11 +23,11 @@ A Siemens [Open Recon](https://www.siemens-healthineers.com/magnetic-resonance-i
 1. The scan operator runs a multi-echo 3D GRE sequence with magnitude + phase output, with this app selected on the Open Recon card.
 2. Siemens' Emitter functor streams the reconstructed magnitude/phase images to the container over MRD ([qsm.py](qsm.py)'s `process()`).
 3. [qsm.py](qsm.py) buffers every image (QSM needs the whole 3D multi-echo volume, not one image at a time -- see the module's own docstring), then:
-   - Optionally runs FSL's `bet2` on the first echo to get a brain mask, per the "QSM Output" UI parameter's whole-head/brain-extracted/both selection (see [UI parameters](#ui-parameters)).
+   - Per the "Reconstruction Mode" UI parameter (see [UI parameters](#ui-parameters)), optionally runs FSL's `bet2` on the first echo to get a brain mask ("Brain-masked", the default) or skips it ("Whole-head").
    - Calls into [iQSM_Plus](https://github.com/sunhongfu/iQSM_Plus) (`run_iqsm_plus()`, cloned locally as a gitignored subfolder of this repo -- see [Building the Docker image](#building-the-docker-image) -- rather than tracked in this repo's own git history) to run the actual deep-learning QSM reconstruction.
-   - If the "Compute R2* Mapping" UI parameter is on (default), also calls into [DeepRelaxo](https://github.com/sunhongfu/DeepRelaxo) (`estimate_r2s()` + `denoise_r2s_map()`, same gitignored-subfolder pattern) to run its two-stage R2* mapping, reusing the same magnitude NIfTIs and bet2 mask already prepared for QSM -- no separate brain extraction.
+   - If the acquisition has at least 2 echoes, also calls into [DeepRelaxo](https://github.com/sunhongfu/DeepRelaxo) (`estimate_r2s()` + `denoise_r2s_map()`, same gitignored-subfolder pattern) to run its two-stage R2* mapping, reusing the same magnitude NIfTIs and bet2 mask already prepared for QSM -- no separate brain extraction. Single-echo acquisitions can't support R2* mapping (needs at least 2 points to fit a decay curve), so this is skipped automatically -- QSM-only output in that case.
    - Quantizes the resulting maps (ppm for QSM, s⁻¹ for R2*) into uint16 DICOM pixel data with fixed rescale slopes/intercepts.
-4. All requested maps -- QSM brain-extracted (`image_series_index=100`) and/or whole-head (`101`), R2* brain-extracted (`102`) and/or whole-head (`103`), per the "QSM Output"/"Compute R2* Mapping" UI parameters -- **and** the original acquisition series are sent back unmodified -- Open Recon only saves/displays images an app explicitly returns, so passing through the originals is what keeps them from being silently discarded.
+4. Both maps for the selected mode -- QSM (`image_series_index=100` brain-masked / `101` whole-head) and, if computed, R2* (`102` brain-masked / `103` whole-head) -- **and** the original acquisition series are sent back unmodified -- Open Recon only saves/displays images an app explicitly returns, so passing through the originals is what keeps them from being silently discarded. A single exam only ever produces one mode's output; re-run with the other "Reconstruction Mode" selection (via retro-recon, if supported) to get the other one.
 
 ## Repository layout
 
@@ -38,6 +39,7 @@ A Siemens [Open Recon](https://www.siemens-healthineers.com/magnetic-resonance-i
 - [docker/build_openrecon_package.py](docker/build_openrecon_package.py) -- packages the built image + `docs.pdf` into the `.zip` Open Recon expects for scanner installation.
 - [qsm_json_ui.json](qsm_json_ui.json) -- the Open Recon app manifest: UI parameters, GPU/memory/CPU requirements, versioning. Gets base64-encoded into a Docker image label during packaging.
 - [RunQSMRecon.ipynb](RunQSMRecon.ipynb) -- local test/validation workflow: DICOM-to-MRD conversion, running a reconstruction, converting the result to DICOM, and displaying the QSM map.
+- [offline_recon.py](offline_recon.py) + [docker/offline_recon.dockerfile](docker/offline_recon.dockerfile) -- a separate, standalone Docker image for offline/batch use (research, testing against archived DICOMs) -- **not** the Siemens Open Recon scanner framework. See [Offline batch reconstruction](#offline-batch-reconstruction).
 - [docs/scanner-deployment-guide.md](docs/scanner-deployment-guide.md) -- scanner-side installation notes.
 
 ## Building the Docker image
@@ -124,8 +126,7 @@ Defined in `qsm_json_ui.json`'s `parameters` array, rendered as the Open Recon c
 |---|---|---|---|
 | `config` | choice | `qsm` | Which module the server dispatches to. |
 | `customconfig` | string | `""` | Override `config` with an arbitrary module name not in the dropdown. |
-| `qsmoutput` | choice (`both`/`masked`/`wholehead`) | `both` | Which QSM map(s) to reconstruct: whole-head only, brain-extracted only (`bet2`), or both as separate series. Also controls the R2* output selection below (`r2smapping` reuses this same choice/mask). |
-| `r2smapping` | boolean | `true` | Also run DeepRelaxo's R2* mapping from the same magnitude images, output as additional series alongside QSM. |
+| `reconmode` | choice (`masked`/`wholehead`) | `masked` | Which mask variant to reconstruct QSM (and R2*, if the acquisition has 2+ echoes) with: brain-masked (`bet2`) or whole-head. Applies to both -- a single exam only ever produces one variant. |
 
 Parameter `id`s must match `^[A-Za-z0-9]+$` (no underscores) -- an Open Recon schema constraint.
 
@@ -153,9 +154,36 @@ switching VS Code's environment, or for testing the *exact* image that's about t
 
 To simulate a specific UI parameter value from `client.py` without a real scanner/Open Recon UI: create a `<config>.json` sidecar file (e.g. `qsm.json`) in the working directory --
 ```json
-{"parameters": {"config": "qsm", "brainextraction": true}}
+{"parameters": {"config": "qsm", "reconmode": "masked"}}
 ```
 `client.py` automatically finds and sends it when you pass `-c qsm`.
+
+## Offline batch reconstruction
+
+For research/offline use against archived DICOMs -- **not** the Siemens Open Recon scanner
+framework, no Injector/Emitter protocol involved. [docker/offline_recon.dockerfile](docker/offline_recon.dockerfile)
+builds a separate image on top of `openrecon-qsm:prod` (same iQSM_Plus/DeepRelaxo/bet2/torch
+dependencies) with a different entrypoint: [offline_recon.py](offline_recon.py), a CLI script
+that takes a folder of DICOMs in and writes QSM/R2* DICOMs out, with no server/client dance
+required on your end -- internally it orchestrates the exact same `dicom2mrd.py` ->
+[qsm.py](qsm.py)'s `process_qsm()` (via a local, loopback-only MRD server+client pair) ->
+`mrd2dicom.py` pipeline already used everywhere else in this repo, rather than reimplementing
+anything.
+
+```bash
+# after building openrecon-qsm:prod (see "Building the Docker image" above):
+docker build -f docker/offline_recon.dockerfile -t offline-qsm-recon .
+
+docker run --rm --gpus all \
+    -v /path/to/dicoms:/input:ro \
+    -v /path/to/output:/output \
+    offline-qsm-recon --input /input --output /output --mode masked
+```
+
+`--mode` is `masked` (default) or `wholehead`, matching the scanner app's "Reconstruction
+Mode" UI parameter -- see [UI parameters](#ui-parameters). `--gpus all` is optional (CPU
+fallback works, just far slower); drop it entirely on a host with no GPU/NVIDIA Container
+Toolkit. Run `docker run --rm offline-qsm-recon --help` for all options.
 
 ## Diagnostics
 

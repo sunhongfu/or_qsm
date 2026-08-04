@@ -1,17 +1,17 @@
 {
   "general": {
     "name": { "en": "iQSM_Plus" },
-    "version": "1.1.2",
+    "version": "1.1.3",
     "vendor": "HMRI Imaging Centre",
     "information": { "en": "Deep-learning QSM (iQSM+) and R2* (DeepRelaxo) reconstruction from multi-echo GRE magnitude/phase images." },
     "id": "iQSMPlus",
     "regulatory_information": {
       "device_trade_name": "iQSM_Plus",
-      "production_identifier": "1.1.2",
+      "production_identifier": "1.1.3",
       "manufacturer_address": "Kookaburra Circuit Lot 1, New Lambton Heights, NSW, AU, 2305",
       "made_in": "AU",
       "manufacture_date": "2026/08/04",
-      "material_number": "iQSM_Plus_1.1.2",
+      "material_number": "iQSM_Plus_1.1.3",
       "gtin": "00000000000000",
       "udi": "(00)00000000000000(00)1.0.0",
       "safety_advices": "Research use only. Not for diagnostic use.",
@@ -57,32 +57,21 @@
       "default": ""
     },
     {
-      "id": "qsmoutput",
+      "id": "reconmode",
       "type": "choice",
-      "label": { "en": "QSM Output" },
+      "label": { "en": "Reconstruction Mode" },
       "values": [
         {
-          "id": "both",
-          "name": { "en": "Whole-head + Brain-extracted (both)" }
-        },
-        {
           "id": "masked",
-          "name": { "en": "Brain-extracted only" }
+          "name": { "en": "Brain-masked QSM + R2*" }
         },
         {
           "id": "wholehead",
-          "name": { "en": "Whole-head only" }
+          "name": { "en": "Whole-head QSM + R2*" }
         }
       ],
-      "default": "both",
-      "information": { "en": "Choose which QSM map(s) to reconstruct: whole-head only, brain-extracted only (skull-stripped via FSL's BET2, suppressing non-brain background artifacts), or both as separate series. 'Both' runs the iQSM+ network twice (once per input) and roughly doubles reconstruction time." }
-    },
-    {
-      "id": "r2smapping",
-      "type": "boolean",
-      "label": { "en": "Compute R2* Mapping" },
-      "information": { "en": "Also run DeepRelaxo's deep-learning R2* mapping from the same multi-echo GRE magnitude images, output as additional series alongside QSM. Uses the same whole-head / brain-extracted / both selection as 'QSM Output' above." },
-      "default": true
+      "default": "masked",
+      "information": { "en": "Brain-masked (default): skull-stripped QSM and R2* maps (via FSL's BET2, suppressing non-brain background artifacts). Whole-head: unmasked QSM and R2* maps covering the full field of view. R2* mapping requires at least 2 echoes -- automatically skipped (QSM only) for single-echo acquisitions." }
     }
   ]
 }
