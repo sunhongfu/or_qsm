@@ -17,7 +17,6 @@ import os
 import sys
 import logging
 import traceback
-import threading
 import subprocess
 import numpy as np
 import nibabel as nib
@@ -89,135 +88,6 @@ def _import_deeprelaxo():
     from run_estimator_stage import estimate_r2s
     from run_denoiser_stage import denoise_r2s_map
     return estimate_r2s, denoise_r2s_map
-
-
-# ==============================================================================
-# Diagnostics: which device inference actually runs on, and memory usage over
-# time. A kernel OOM kill gives the process no chance to log or raise anything
-# before it dies, so the log just goes dark -- these helpers make sure
-# *something* is logged (and flushed to the container log, which is what
-# survives the kill) right up until the moment it happens, and make it
-# possible to tell from the log alone whether inference used the GPU or fell
-# back to (slower, much more host-RAM-hungry) CPU execution.
-# ==============================================================================
-
-def _log_device_info():
-    """Log whether CUDA/GPU is visible to this process. A silent CPU fallback (e.g.
-    because the installed torch build has no CUDA support, or the driver/toolkit
-    versions don't match) looks identical to a working GPU run except for using far more
-    host RAM and being far slower -- this makes it visible in the log instead of having
-    to guess after the fact."""
-    logging.info("NVIDIA_VISIBLE_DEVICES=%s CUDA_VISIBLE_DEVICES=%s",
-                 os.environ.get("NVIDIA_VISIBLE_DEVICES"), os.environ.get("CUDA_VISIBLE_DEVICES"))
-    try:
-        import torch
-    except ImportError as e:
-        logging.warning("Could not import torch to check GPU availability: %s", e)
-        return
-
-    cudaAvailable = torch.cuda.is_available()
-    logging.info("torch %s -- torch.cuda.is_available() = %s", torch.__version__, cudaAvailable)
-
-    if cudaAvailable:
-        try:
-            for i in range(torch.cuda.device_count()):
-                props = torch.cuda.get_device_properties(i)
-                logging.info("  GPU %d: %s, %.1f GB total memory, capability %d.%d",
-                             i, props.name, props.total_memory / (1024 ** 3), props.major, props.minor)
-        except Exception:
-            logging.warning("Could not enumerate CUDA devices:\n%s", traceback.format_exc())
-    else:
-        logging.warning("CUDA is NOT available in this process -- inference will run on "
-                         "CPU, which is far slower and uses substantially more host RAM for a "
-                         "volume this size than the equivalent GPU run.")
-
-
-def _cgroup_memory_usage_bytes():
-    """Current/limit memory usage as enforced by Docker's cgroup, in bytes, or (None,
-    None) if unreadable. This is the number a container memory limit (and the kernel OOM
-    killer) actually acts on -- it can differ from plain process RSS (page cache, shared
-    libs, etc.), so it's the most direct signal for how close a process is to being
-    OOM-killed."""
-    try:  # cgroup v2
-        with open("/sys/fs/cgroup/memory.current") as f:
-            usage = int(f.read().strip())
-        with open("/sys/fs/cgroup/memory.max") as f:
-            raw = f.read().strip()
-            limit = None if raw == "max" else int(raw)
-        return usage, limit
-    except OSError:
-        pass
-    try:  # cgroup v1
-        with open("/sys/fs/cgroup/memory/memory.usage_in_bytes") as f:
-            usage = int(f.read().strip())
-        with open("/sys/fs/cgroup/memory/memory.limit_in_bytes") as f:
-            limit = int(f.read().strip())
-        return usage, limit
-    except OSError:
-        return None, None
-
-
-def _log_memory_usage(tag):
-    """Log host RSS, cgroup memory usage/limit, and GPU memory, tagged with a short label
-    identifying the pipeline stage. Cheap enough to call liberally."""
-    try:
-        with open("/proc/self/status") as f:
-            status = f.read()
-        vmrssKb = next((int(line.split()[1]) for line in status.splitlines()
-                        if line.startswith("VmRSS:")), None)
-    except OSError:
-        vmrssKb = None
-    rssStr = "%.1f MB" % (vmrssKb / 1024.0) if vmrssKb is not None else "unknown"
-
-    cgroupUsage, cgroupLimit = _cgroup_memory_usage_bytes()
-    if cgroupUsage is not None and cgroupLimit:
-        cgroupStr = "%.1f/%.1f MB (%.0f%%)" % (
-            cgroupUsage / (1024 ** 2), cgroupLimit / (1024 ** 2), 100.0 * cgroupUsage / cgroupLimit)
-    elif cgroupUsage is not None:
-        cgroupStr = "%.1f MB (no limit found)" % (cgroupUsage / (1024 ** 2))
-    else:
-        cgroupStr = "unknown"
-
-    gpuStr = "n/a"
-    try:
-        import torch
-        if torch.cuda.is_available():
-            allocated = torch.cuda.memory_allocated() / (1024 ** 2)
-            reserved  = torch.cuda.memory_reserved() / (1024 ** 2)
-            gpuStr = "allocated=%.1f MB reserved=%.1f MB" % (allocated, reserved)
-    except ImportError:
-        pass
-
-    logging.info("[mem] %-28s host RSS=%s | cgroup=%s | GPU %s", tag, rssStr, cgroupStr, gpuStr)
-
-
-class _MemoryHeartbeat:
-    """Logs memory usage on a background thread every `interval_sec` seconds while the
-    `with` block runs. Meant to wrap long-running/opaque calls whose internals can't be
-    instrumented directly (iQSM+'s inference.py, DeepRelaxo's per-voxel estimator) --
-    without this, a run that gets killed or simply runs long leaves nothing in the log
-    between the last line before the call and whatever happens after, indistinguishable
-    from a hang."""
-
-    def __init__(self, tag, interval_sec=5.0):
-        self._tag = tag
-        self._interval = interval_sec
-        self._stop_event = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-
-    def __enter__(self):
-        _log_memory_usage(self._tag + " (start)")
-        self._thread.start()
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self._stop_event.set()
-        self._thread.join(timeout=self._interval + 1.0)
-        _log_memory_usage(self._tag + " (end, exc=%s)" % (exc_type.__name__ if exc_type else "none"))
-
-    def _run(self):
-        while not self._stop_event.wait(self._interval):
-            _log_memory_usage(self._tag)
 
 
 # ==============================================================================
@@ -539,9 +409,6 @@ def process(connection, config, metadata):
 def process_qsm(buffer, connection, config, metadata):
     tic = perf_counter()
 
-    _log_device_info()
-    _log_memory_usage("process_qsm start")
-
     if not os.path.exists(debugFolder):
         os.makedirs(debugFolder)
         logging.debug("Created folder " + debugFolder + " for debug output files")
@@ -563,7 +430,6 @@ def process_qsm(buffer, connection, config, metadata):
     logging.info("Buffered volumes: magVol shape=%s dtype=%s (%.1f MB), phaseVol shape=%s dtype=%s (%.1f MB)",
                  magVol.shape, magVol.dtype, magVol.nbytes / (1024 ** 2),
                  phaseVol.shape, phaseVol.dtype, phaseVol.nbytes / (1024 ** 2))
-    _log_memory_usage("after buffering volumes")
     np.save(os.path.join(debugFolder, "magVol.npy"), magVol)
     np.save(os.path.join(debugFolder, "phaseVol_rad.npy"), phaseVol)
 
@@ -630,35 +496,30 @@ def process_qsm(buffer, connection, config, metadata):
         run_iqsm_plus() processes a single echo per call -- multi-echo combination is
         handled externally here, exactly as iQSM_Plus's own run.py/app.py do. Model
         weights are cached globally inside get_model() (keyed by device), so looping here
-        does not reload them from disk each iteration. run_iqsm_plus() is opaque to us
-        (lives in the separate iQSM_Plus checkout) and can run long with no output of its
-        own, so _MemoryHeartbeat logs memory on a background thread throughout the call --
-        if the process is ever killed mid-call (e.g. OOM), the last few heartbeats show
-        how memory was trending beforehand.
+        does not reload them from disk each iteration.
         """
         inferenceStart = perf_counter()
         qsmVolumes = []
         try:
-            with _MemoryHeartbeat("during run_iqsm_plus (%s)" % label):
-                for echo in range(nEchoes):
-                    echoPhasePath = os.path.join(debugFolder, "phase_echo%d.nii.gz" % echo)
-                    echoMagPath   = os.path.join(debugFolder, "mag_echo%d.nii.gz" % echo)
-                    nib.save(nib.Nifti1Image(phaseVol[..., echo], affine), echoPhasePath)
-                    nib.save(nib.Nifti1Image(magVol[..., echo],   affine), echoMagPath)
+            for echo in range(nEchoes):
+                echoPhasePath = os.path.join(debugFolder, "phase_echo%d.nii.gz" % echo)
+                echoMagPath   = os.path.join(debugFolder, "mag_echo%d.nii.gz" % echo)
+                nib.save(nib.Nifti1Image(phaseVol[..., echo], affine), echoPhasePath)
+                nib.save(nib.Nifti1Image(magVol[..., echo],   affine), echoMagPath)
 
-                    logging.info("Running iQSM+ (%s) on echo %d/%d (TE=%.4f s)",
-                                 label, echo + 1, nEchoes, te_sec[echo])
-                    echoQsmPath = run_iqsm_plus(
-                        phase_nii_path=echoPhasePath,
-                        te=float(te_sec[echo]),
-                        mag_nii_path=echoMagPath,
-                        mask_nii_path=maskNiiPath,
-                        voxel_size=voxel_mm,
-                        b0_dir=b0_dir,
-                        b0=b0_tesla,
-                        output_dir=os.path.join(debugFolder, "%s_echo%d_output" % (label, echo)),
-                    )
-                    qsmVolumes.append(nib.load(echoQsmPath).get_fdata(dtype=np.float32))
+                logging.info("Running iQSM+ (%s) on echo %d/%d (TE=%.4f s)",
+                             label, echo + 1, nEchoes, te_sec[echo])
+                echoQsmPath = run_iqsm_plus(
+                    phase_nii_path=echoPhasePath,
+                    te=float(te_sec[echo]),
+                    mag_nii_path=echoMagPath,
+                    mask_nii_path=maskNiiPath,
+                    voxel_size=voxel_mm,
+                    b0_dir=b0_dir,
+                    b0=b0_tesla,
+                    output_dir=os.path.join(debugFolder, "%s_echo%d_output" % (label, echo)),
+                )
+                qsmVolumes.append(nib.load(echoQsmPath).get_fdata(dtype=np.float32))
         except CheckpointNotFoundError as e:
             raise Exception("iQSM+ model checkpoints not found: %s" % e)
         except Exception:
@@ -668,37 +529,21 @@ def process_qsm(buffer, connection, config, metadata):
         logging.info("run_iqsm_plus() (%s) completed %d echo(es) in %.1f s",
                      label, nEchoes, perf_counter() - inferenceStart)
 
-        # Magnitude x TE^2 weighted average across echoes -- mirrors iQSM_Plus's own
-        # run.py:_run_multi_echo() combiner exactly. Guard against dividing by a *near*-
-        # zero (not just exactly-zero) denominator: at image edges/background, magVol is
-        # typically tiny but essentially never exactly 0.0 in real acquired data (thermal
-        # noise floor), so an exact `teWeightsSum == 0` check would let tiny-but-nonzero
-        # denominators through and amplify numerator noise into wildly extreme values.
-        # Voxels below a small relative threshold are set to 0 ppm directly instead of
-        # dividing by a near-zero number.
+        # TE^2-weighted average across echoes -- a fixed per-echo weight (no magnitude
+        # weighting), so every voxel is combined the same way regardless of local signal
+        # strength.
         qsmStack = np.stack(qsmVolumes, axis=-1)
-        teWeights = (magVol * np.array(te_sec, dtype=np.float32).reshape(1, 1, 1, -1)) ** 2
-        teWeightsSum = teWeights.sum(axis=-1)
-        weightThreshold = float(teWeightsSum.max()) * 1e-3
-        reliableVoxels = teWeightsSum > weightThreshold
-        qsmVol = np.zeros(teWeightsSum.shape, dtype=np.float32)
-        qsmVol[reliableVoxels] = ((teWeights * qsmStack).sum(axis=-1) / teWeightsSum)[reliableVoxels]
-        logging.info("Multi-echo combination (%s): %d of %d voxels (%.1f%%) below weight threshold "
-                     "(insufficient signal to combine) -- set to 0 ppm instead of divided",
-                     label, int((~reliableVoxels).sum()), teWeightsSum.size,
-                     100.0 * (~reliableVoxels).sum() / teWeightsSum.size)
+        teWeights = np.array(te_sec, dtype=np.float32) ** 2
+        qsmVol = (qsmStack * teWeights.reshape(1, 1, 1, -1)).sum(axis=-1) / teWeights.sum()
 
-        # reliableVoxels is purely a magnitude/weight criterion -- it says nothing about
-        # whether qsmStack (the network's raw per-echo output) is actually finite there,
-        # so a "reliable" voxel can still carry through a NaN/Inf the network produced.
-        # Left unguarded, that NaN survives all the way to uint16 quantization, where
-        # `.astype(np.uint16)` on NaN is undefined behavior in C -- confirmed to silently
-        # produce different garbage per platform (0 on macOS/arm64, 32768 on Linux/
-        # x86_64) rather than raising, corrupting DICOM slices with no exception or
-        # warning anywhere. Observed in practice at the extreme top/bottom Z-slices of a
-        # real scan, plausibly interacting with the network's own boundary-zeroing
-        # behavior (see LoTLayer's LG() in iQSM_Plus/models/unet_blocks.py). Treated the
-        # same as insufficient-signal voxels (0 ppm) rather than left to propagate.
+        # The network's raw per-echo output can still independently contain a NaN/Inf at
+        # some voxels (observed in practice at the extreme top/bottom Z-slices of a real
+        # scan, plausibly interacting with the network's own boundary-zeroing behavior --
+        # see LoTLayer's LG() in iQSM_Plus/models/unet_blocks.py). Left unguarded, that NaN
+        # survives all the way to uint16 quantization, where `.astype(np.uint16)` on NaN is
+        # undefined behavior in C -- confirmed to silently produce different garbage per
+        # platform (0 on macOS/arm64, 32768 on Linux/x86_64) rather than raising, corrupting
+        # DICOM slices with no exception or warning anywhere.
         badVoxels = ~np.isfinite(qsmVol)
         nBad = int(badVoxels.sum())
         if nBad > 0:
@@ -758,9 +603,8 @@ def process_qsm(buffer, connection, config, metadata):
             r2sWholeheadMap = None
             if needWholehead:
                 r2sTic = perf_counter()
-                with _MemoryHeartbeat("during DeepRelaxo estimator (wholehead)"):
-                    r2sWholeheadMap, _ = estimate_r2s(magnitude_entries=magnitude_entries,
-                                                       te_values_ms=te_values_ms, bet_mask_path=None)
+                r2sWholeheadMap, _ = estimate_r2s(magnitude_entries=magnitude_entries,
+                                                   te_values_ms=te_values_ms, bet_mask_path=None)
                 r2sWholeheadMap = r2sWholeheadMap.numpy()
                 wholeheadMask = np.ones(r2sWholeheadMap.shape, dtype=bool)
                 r2sWholeheadDenoised = denoise_r2s_map(r2sWholeheadMap, wholeheadMask)
@@ -777,9 +621,8 @@ def process_qsm(buffer, connection, config, metadata):
                     logging.info("DeepRelaxo (masked) derived from whole-head estimator pass "
                                  "(shared-estimator optimization)")
                 else:
-                    with _MemoryHeartbeat("during DeepRelaxo estimator (masked)"):
-                        r2sMaskedMap, _ = estimate_r2s(magnitude_entries=magnitude_entries,
-                                                        te_values_ms=te_values_ms, bet_mask_path=maskPath)
+                    r2sMaskedMap, _ = estimate_r2s(magnitude_entries=magnitude_entries,
+                                                    te_values_ms=te_values_ms, bet_mask_path=maskPath)
                     r2sMaskedMap = r2sMaskedMap.numpy()
                 r2sMaskedDenoised = denoise_r2s_map(r2sMaskedMap, maskArr)
                 logging.info("DeepRelaxo (masked) completed in %.1f s", perf_counter() - r2sTic)
