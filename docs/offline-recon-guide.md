@@ -37,6 +37,24 @@ image on top of it is fast (~1s — it just adds one small script layer):
 docker build -f docker/offline_recon.dockerfile -t offline-qsm-recon .
 ```
 
+> **Rebuild the base image first if any of the reconstruction code changed.**
+> `offline_recon.dockerfile` is `FROM openrecon-qsm:prod` and only copies
+> `offline_recon.py` on top — everything that does the actual reconstruction (`qsm.py`,
+> `dicom2mrd.py`, `mrd2dicom.py`, iQSM_Plus, DeepRelaxo) comes from that base. So a
+> rebuild of *this* file picks up changes to `offline_recon.py` only, and silently keeps
+> whatever version of the pipeline the base image was last built with — no error, no
+> warning, just stale results. After changing anything else, rebuild both:
+>
+> ```bash
+> docker build --platform linux/amd64 -f docker/qsm.dockerfile -t openrecon-qsm:prod .
+> docker build -f docker/offline_recon.dockerfile -t offline-qsm-recon .
+> ```
+>
+> To check what a built image actually contains:
+> ```bash
+> docker run --rm --entrypoint sh offline-qsm-recon -c 'grep -n "teWeights = " /opt/code/python-ismrmrd-server/qsm.py'
+> ```
+
 Confirm it's ready:
 
 ```bash
@@ -80,21 +98,37 @@ where it's at.
 
 ## 5. Expected timing
 
-Measured on this repo's own test dataset (256×192×176 matrix, 176 slices, 5 echoes) under
-CPU-only execution (no GPU available in that test environment):
+Measured on this repo's own test dataset (`data/SWI` — 256×192×176 matrix, 176 slices,
+5 echoes, 1760 input DICOMs).
+
+**On GPU** (NVIDIA RTX A4500 20GB, driver 550.163.01, torch 2.3.0+cu118):
+
+| Mode | QSM (iQSM+) | R2* (DeepRelaxo) | Total wall-clock |
+|---|---|---|---|
+| `masked` | ~8 s | ~10 s | **~50 s** |
+| `wholehead` | ~11 s | ~44 s | **~85 s** |
+
+**On CPU only** (no GPU available):
 
 | Mode | QSM | R2* | Total (CPU) |
 |---|---|---|---|
 | `masked` | ~3-5 min | ~10-12 min | ~15-20 min |
 | `wholehead` | ~20-25 min | ~35-40 min | ~1 hour |
 
+Two things to note about the GPU totals. First, roughly **30 s of each total is fixed
+overhead** — DICOM→MRD conversion in, MRD→DICOM conversion out, server startup and MRD
+streaming — and is independent of mode and of GPU/CPU; it scales with the *number of input
+DICOMs*, not with reconstruction difficulty. Actual inference is only ~20 s (`masked`) and
+~55 s (`wholehead`). Second, `masked` additionally spends ~1.6 s on `bet2` brain
+extraction, which `wholehead` skips entirely.
+
 `wholehead` is substantially slower than `masked` for both QSM and R2* — the brain mask
-lets both pipelines skip most of the non-brain field of view. **A real GPU should be
-dramatically faster** (the underlying networks are small enough that GPU inference is
-typically an order of magnitude or more faster than CPU for volumes this size), but this
-hasn't been independently timed on GPU hardware as part of this repo's own testing --
-budget accordingly until you've measured it on your own hardware, and don't be alarmed if
-a CPU-only run takes the better part of an hour for `wholehead`.
+lets both pipelines skip most of the non-brain field of view. The gap is widest for R2*
+(~4× on GPU: 44 s vs 10 s), since DeepRelaxo's per-voxel estimator cost scales directly
+with the number of voxels it has to visit.
+
+Scale roughly linearly with slice count for other matrix sizes, and expect the fixed
+overhead above to grow with input DICOM count.
 
 ## 6. Options reference
 
@@ -140,8 +174,8 @@ RescaleIntercept` (any compliant DICOM viewer does this automatically).
   a known issue where `/dev/nvidia-uvm`'s kernel-assigned major number drifts after a
   driver update and the CDI spec falls out of sync.
 - **Reconstruction seems to hang with no output for a long time** — expected for
-  `wholehead` mode's R2* stage specifically (DeepRelaxo's per-voxel estimator has no
-  internal progress logging over that ~35-40 min CPU stretch — see
+  `wholehead` mode's R2* stage specifically: DeepRelaxo's per-voxel estimator has no
+  internal progress logging, so it goes quiet for ~45 s on GPU, or ~35-40 min on CPU (see
   [Expected timing](#5-expected-timing)). `-v` shows the surrounding stages clearly; the
   silence is bounded to just that one stage.
 - **Disk space** — the base image is ~7GB. Each run additionally needs temporary space for
