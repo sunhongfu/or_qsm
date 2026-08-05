@@ -437,7 +437,13 @@ def main(args):
             tmpMrdImg.attribute_string = tmpMeta.serialize()
             imgAll[iSer][iImg] = tmpMrdImg
 
-    # Create an MRD file
+    # Create an MRD file. ismrmrd.Dataset() opens outFile in HDF5 append mode -- if it
+    # already exists, images get appended onto the existing series arrays instead of
+    # replacing them, silently growing the file across reruns. Remove any prior file first
+    # so each run always starts fresh.
+    if os.path.exists(args.outFile):
+        os.remove(args.outFile)
+
     print("Creating MRD file %s with group %s" % (args.outFile, args.outGroup))
     mrdDset = ismrmrd.Dataset(args.outFile, args.outGroup)
     mrdDset._file.require_group(args.outGroup)

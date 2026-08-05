@@ -185,6 +185,9 @@ Mode" UI parameter -- see [UI parameters](#ui-parameters). `--gpus all` is optio
 fallback works, just far slower); drop it entirely on a host with no GPU/NVIDIA Container
 Toolkit. Run `docker run --rm offline-qsm-recon --help` for all options.
 
+See [docs/offline-recon-guide.md](docs/offline-recon-guide.md) for the full usage guide --
+input/output format, DICOM series numbering, expected timing, and troubleshooting.
+
 ## Diagnostics
 
 `qsm.py` and `inference.py` log the source of every acquisition parameter fed into iQSM+ (`voxel_size_mm`, `b0_dir`, `TE(s)`, `b0` -- including *which* MRD header field or fallback path each came from), plus memory usage (host RSS, cgroup usage vs. limit, GPU allocation) at every major pipeline stage, including a background heartbeat during the deep-learning inference call. Added after a production run was silently OOM-killed by the kernel with no other trace in the log -- see git history for the incident and the voxel-size unit bug it led to finding.
