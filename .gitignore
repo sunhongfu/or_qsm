@@ -24,3 +24,7 @@ iQSM_Plus/
 # DeepRelaxo (R2* mapping, https://github.com/sunhongfu/DeepRelaxo) -- same pattern as
 # iQSM_Plus above: cloned locally into this subfolder rather than tracked here.
 DeepRelaxo/
+
+# iQSM (https://github.com/sunhongfu/iQSM, the original non-orientation-adaptive
+# predecessor of iQSM_Plus) -- same pattern as iQSM_Plus/DeepRelaxo above.
+iQSM/

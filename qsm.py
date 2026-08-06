@@ -375,7 +375,24 @@ def process(connection, config, metadata):
                 logging.warning("Unsupported data type %s -- ignoring", type(item).__name__)
 
         if len(buffer) > 0:
-            imagesOut = process_qsm(buffer, connection, config, metadata)
+            # process_qsm() can fail anywhere inside (bet2, iQSM+, DeepRelaxo, quantization,
+            # ...) -- isolated in its own try/except so a reconstruction failure still
+            # returns the originally-received images rather than nothing at all. Without
+            # this, a QSM/R2* crash would silently discard the acquisition's own magnitude/
+            # phase images too, since they're normally only sent back as part of
+            # process_qsm()'s own return value (see its "Pass through" comment) -- an
+            # OpenRecon app failure should degrade to "no QSM/R2* this exam", never to
+            # "no images from this exam at all".
+            try:
+                imagesOut = process_qsm(buffer, connection, config, metadata)
+            except Exception:
+                logging.error("QSM/R2* reconstruction failed -- returning original images "
+                              "only (no derived QSM/R2* output):\n%s", traceback.format_exc())
+                connection.send_logging(
+                    constants.MRD_LOGGING_ERROR,
+                    "QSM/R2* reconstruction failed -- original acquisition images are still "
+                    "returned. See server log for details.")
+                imagesOut = list(buffer.values())
             if imagesOut:
                 connection.send_image(imagesOut)
         else:
