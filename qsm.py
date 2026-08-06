@@ -114,6 +114,16 @@ def _get_recon_mode(config):
     return value if value in ('masked', 'wholehead') else 'masked'
 
 
+def _get_bool_ui_param(config, key, default):
+    """Read a boolean UI parameter. Does not just bool(...) the raw value -- Open Recon's
+    Injector has been observed to send boolean UI parameters as the *string* "false", and
+    bool("false") is True in Python."""
+    value = _get_ui_param(config, key, default)
+    if isinstance(value, str):
+        return value.strip().lower() not in ('false', '0', '')
+    return bool(value)
+
+
 # ==============================================================================
 # Per-image metadata extraction
 # ==============================================================================
@@ -480,6 +490,15 @@ def process_qsm(buffer, connection, config, metadata):
     reconMode = _get_recon_mode(config)
     useMask = reconMode == 'masked'
 
+    # QSM defaults on, R2* defaults off -- R2* mapping (DeepRelaxo) takes noticeably
+    # longer than QSM (iQSM+) alone, so it's opt-in per exam rather than always-on;
+    # enable it via retro-recon afterward if it turns out to be needed.
+    qsmEnabled = _get_bool_ui_param(config, 'qsmenabled', True)
+    r2sEnabled = _get_bool_ui_param(config, 'r2smapping', False)
+    if not qsmEnabled and not r2sEnabled:
+        logging.warning("Both QSM and R2* mapping are disabled via UI parameters -- only "
+                        "the original acquisition images will be returned")
+
     maskPath = None
     if useMask:
         # bet2 needs a plain 3D volume, not the 4D multi-echo array -- run it on the
@@ -508,6 +527,15 @@ def process_qsm(buffer, connection, config, metadata):
         qsmComment = "QSM whole-head (ppb = ppm*1e3), iQSM+"
         r2sComment = "R2* whole-head (s^-1), DeepRelaxo"
 
+    # Written unconditionally (regardless of qsmEnabled/r2sEnabled) since R2* mapping
+    # (DeepRelaxo) needs mag_echo{N}.nii.gz even when QSM itself is disabled -- previously
+    # these were only written as a side effect inside _reconstruct_qsm().
+    for echo in range(nEchoes):
+        nib.save(nib.Nifti1Image(phaseVol[..., echo], affine),
+                 os.path.join(debugFolder, "phase_echo%d.nii.gz" % echo))
+        nib.save(nib.Nifti1Image(magVol[..., echo], affine),
+                 os.path.join(debugFolder, "mag_echo%d.nii.gz" % echo))
+
     def _reconstruct_qsm(maskNiiPath):
         """Run iQSM+ across all echoes with the given brain mask (None for whole-head,
         unmasked reconstruction) and combine echoes into one susceptibility volume (ppm).
@@ -523,8 +551,6 @@ def process_qsm(buffer, connection, config, metadata):
             for echo in range(nEchoes):
                 echoPhasePath = os.path.join(debugFolder, "phase_echo%d.nii.gz" % echo)
                 echoMagPath   = os.path.join(debugFolder, "mag_echo%d.nii.gz" % echo)
-                nib.save(nib.Nifti1Image(phaseVol[..., echo], affine), echoPhasePath)
-                nib.save(nib.Nifti1Image(magVol[..., echo],   affine), echoMagPath)
 
                 logging.info("Running iQSM+ (%s) on echo %d/%d (TE=%.4f s)",
                              label, echo + 1, nEchoes, te_sec[echo])
@@ -575,19 +601,25 @@ def process_qsm(buffer, connection, config, metadata):
         return qsmVol
 
     # (label, image_series_index, SequenceDescriptionAdditional, ImageComments, qsmVol_ppm)
-    qsmResults = [(label, qsmSeriesIndex, qsmSeqDesc, qsmComment, _reconstruct_qsm(maskPath))]
+    qsmResults = []
+    if qsmEnabled:
+        qsmResults = [(label, qsmSeriesIndex, qsmSeqDesc, qsmComment, _reconstruct_qsm(maskPath))]
+    else:
+        logging.info("QSM reconstruction skipped (disabled via UI parameter)")
 
     def _run_r2s_mapping():
-        """R2* mapping (DeepRelaxo), using the same mask variant as QSM above and the exact
-        mag_echo{N}.nii.gz files already written by _reconstruct_qsm() (no separate
-        brain-extraction run). Requires at least 2 echoes to fit a decay curve -- this is
-        not a user-facing toggle, just automatically skipped (QSM-only output) for
-        single-echo acquisitions. Failures here are non-fatal to the QSM output -- caught
-        broadly (covers e.g. a missing DeepRelaxo checkout/checkpoints) and logged, so a
-        broken R2* dependency never blocks the QSM reconstruction the rest of this module
-        already validated.
+        """R2* mapping (DeepRelaxo), using the same mask variant as QSM above and the
+        mag_echo{N}.nii.gz files written above (no separate brain-extraction run).
+        Opt-in via the 'r2smapping' UI parameter (default off -- it takes noticeably
+        longer than QSM alone) and requires at least 2 echoes to fit a decay curve.
+        Failures here are non-fatal to the QSM output -- caught broadly (covers e.g. a
+        missing DeepRelaxo checkout/checkpoints) and logged, so a broken R2* dependency
+        never blocks the QSM reconstruction the rest of this module already validated.
         """
         r2sResults = []  # (label, image_series_index, SequenceDescriptionAdditional, ImageComments, r2sVol)
+        if not r2sEnabled:
+            logging.info("R2* mapping skipped (disabled via UI parameter)")
+            return r2sResults
         if nEchoes < 2:
             logging.info("R2* mapping skipped -- requires at least 2 echoes (got %d)", nEchoes)
             return r2sResults

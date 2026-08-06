@@ -24,10 +24,10 @@ A Siemens [Open Recon](https://www.siemens-healthineers.com/magnetic-resonance-i
 2. Siemens' Emitter functor streams the reconstructed magnitude/phase images to the container over MRD ([qsm.py](qsm.py)'s `process()`).
 3. [qsm.py](qsm.py) buffers every image (QSM needs the whole 3D multi-echo volume, not one image at a time -- see the module's own docstring), then:
    - Per the "Reconstruction Mode" UI parameter (see [UI parameters](#ui-parameters)), optionally runs FSL's `bet2` on the first echo to get a brain mask ("Brain-masked", the default) or skips it ("Whole-head").
-   - Calls into [iQSM_Plus](https://github.com/sunhongfu/iQSM_Plus) (`run_iqsm_plus()`, cloned locally as a gitignored subfolder of this repo -- see [Building the Docker image](#building-the-docker-image) -- rather than tracked in this repo's own git history) to run the actual deep-learning QSM reconstruction.
-   - If the acquisition has at least 2 echoes, also calls into [DeepRelaxo](https://github.com/sunhongfu/DeepRelaxo) (`estimate_r2s()` + `denoise_r2s_map()`, same gitignored-subfolder pattern) to run its two-stage R2* mapping, reusing the same magnitude NIfTIs and bet2 mask already prepared for QSM -- no separate brain extraction. Single-echo acquisitions can't support R2* mapping (needs at least 2 points to fit a decay curve), so this is skipped automatically -- QSM-only output in that case.
+   - If "Reconstruct QSM" is enabled (default: on), calls into [iQSM_Plus](https://github.com/sunhongfu/iQSM_Plus) (`run_iqsm_plus()`, cloned locally as a gitignored subfolder of this repo -- see [Building the Docker image](#building-the-docker-image) -- rather than tracked in this repo's own git history) to run the actual deep-learning QSM reconstruction.
+   - If "Reconstruct R2* Mapping" is enabled (default: **off** -- noticeably slower than QSM alone; enable via retro-recon afterward if needed) and the acquisition has at least 2 echoes, also calls into [DeepRelaxo](https://github.com/sunhongfu/DeepRelaxo) (`estimate_r2s()` + `denoise_r2s_map()`, same gitignored-subfolder pattern) to run its two-stage R2* mapping, reusing the same magnitude NIfTIs and bet2 mask already prepared above -- no separate brain extraction, and independent of whether QSM itself ran. Single-echo acquisitions can't support R2* mapping (needs at least 2 points to fit a decay curve) regardless of the toggle.
    - Quantizes the resulting maps (ppm for QSM, s⁻¹ for R2*) into uint16 DICOM pixel data with fixed rescale slopes/intercepts.
-4. Both maps for the selected mode -- QSM (`image_series_index=100` brain-masked / `101` whole-head) and, if computed, R2* (`102` brain-masked / `103` whole-head) -- **and** the original acquisition series are sent back unmodified -- Open Recon only saves/displays images an app explicitly returns, so passing through the originals is what keeps them from being silently discarded. A single exam only ever produces one mode's output; re-run with the other "Reconstruction Mode" selection (via retro-recon, if supported) to get the other one.
+4. Whichever of QSM (`image_series_index=100` brain-masked / `101` whole-head) and R2* (`102` brain-masked / `103` whole-head) were enabled -- **and** the original acquisition series -- are sent back unmodified -- Open Recon only saves/displays images an app explicitly returns, so passing through the originals is what keeps them from being silently discarded. This holds even if reconstruction itself fails partway through: the original images are always returned, degrading to "no QSM/R2* this exam" rather than "no images at all" (see `process()`'s exception handling in [qsm.py](qsm.py)). A single exam only ever produces one mask variant's output; re-run with a different "Reconstruction Mode" / toggle selection (via retro-recon, if supported) to get another combination.
 
 ## Repository layout
 
@@ -126,7 +126,9 @@ Defined in `qsm_json_ui.json`'s `parameters` array, rendered as the Open Recon c
 |---|---|---|---|
 | `config` | choice | `qsm` | Which module the server dispatches to. |
 | `customconfig` | string | `""` | Override `config` with an arbitrary module name not in the dropdown. |
-| `reconmode` | choice (`masked`/`wholehead`) | `masked` | Which mask variant to reconstruct QSM (and R2*, if the acquisition has 2+ echoes) with: brain-masked (`bet2`) or whole-head. Applies to both -- a single exam only ever produces one variant. |
+| `reconmode` | choice (`masked`/`wholehead`) | `masked` | Which mask variant to reconstruct with: brain-masked (`bet2`) or whole-head. Applies to whichever of QSM/R2* below is enabled -- a single exam only ever produces one variant. |
+| `qsmenabled` | boolean | `true` | Run iQSM+ QSM reconstruction. |
+| `r2smapping` | boolean | `false` | Also run DeepRelaxo R2* mapping. Off by default -- noticeably slower than QSM alone; enable via retro-recon afterward if needed. Requires 2+ echoes regardless. |
 
 Parameter `id`s must match `^[A-Za-z0-9]+$` (no underscores) -- an Open Recon schema constraint.
 
@@ -154,7 +156,7 @@ switching VS Code's environment, or for testing the *exact* image that's about t
 
 To simulate a specific UI parameter value from `client.py` without a real scanner/Open Recon UI: create a `<config>.json` sidecar file (e.g. `qsm.json`) in the working directory --
 ```json
-{"parameters": {"config": "qsm", "reconmode": "masked"}}
+{"parameters": {"config": "qsm", "reconmode": "masked", "qsmenabled": true, "r2smapping": false}}
 ```
 `client.py` automatically finds and sends it when you pass `-c qsm`.
 

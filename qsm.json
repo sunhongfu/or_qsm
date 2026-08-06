@@ -1,6 +1,8 @@
 {
   "parameters": {
     "config": "qsm",
-    "reconmode": "masked"
+    "reconmode": "masked",
+    "qsmenabled": true,
+    "r2smapping": false
   }
 }

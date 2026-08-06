@@ -96,8 +96,16 @@ def main():
     # 'reconmode') are read from a JSON file named "<config>.json" in the client's
     # current working directory -- NOT via -C/--config-local, which sends a different
     # message type that only overrides the config name, not its parameters.
+    #
+    # qsmenabled/r2smapping are set explicitly (true/true) rather than left unset -- on
+    # the scanner these default to QSM-on/R2*-off (R2* is noticeably slower, so it's
+    # opt-in there), but this offline batch tool's own documented behavior has always
+    # been to compute both whenever possible, and its timing/output docs assume that;
+    # leaving these unset would have silently adopted the scanner's newer, different
+    # defaults here instead.
     with open(os.path.join(workDir, "qsm.json"), 'w') as f:
-        json.dump({"parameters": {"config": "qsm", "reconmode": args.mode}}, f)
+        json.dump({"parameters": {"config": "qsm", "reconmode": args.mode,
+                                   "qsmenabled": True, "r2smapping": True}}, f)
 
     serverProc = None
     try:
