@@ -345,47 +345,34 @@ def _run_bet2(mag_nii_path, output_dir, fractional_intensity=0.5):
     return maskPath
 
 
-def _fix_passthrough_row_flip(img):
+def _fix_passthrough_orientation(img):
     """Correct a real, reproducible orientation bug in the pass-through magnitude/phase
-    images: on real scanner hardware, their pixel data is rotated 180 degrees in-plane
-    relative to their own ImageOrientationPatient/ImagePositionPatient tags, while this
-    app's own QSM/R2* output -- built from the same acquisition geometry -- is correctly
-    oriented (confirmed against real scanner hardware: known subject positioning). A
-    180-degree in-plane rotation flips *both* the row and column axes together -- unlike a
-    single-axis flip, this is not a mirror (doesn't change handedness), just a reorientation
-    within the slice plane. qsm.py otherwise never touches pass-through images at all, so
-    whatever the actual root cause (upstream in the scanner's own Emitter/Injector, or an
-    emergent property of the network's implicit orientation handling -- extensive
-    investigation ruled out every code-level explanation within this repo: identical header
-    tags, ismrmrd.Image.from_array(transpose=False) confirmed to be a true no-op, and
-    inference.py's conditional axis permute doesn't even trigger for a near-axial
-    acquisition), this makes the returned image internally self-consistent, matching the
-    orientation QSM/R2* already show.
+    images: on real scanner hardware, they display rotated 180 degrees relative to the
+    QSM/R2* output from the same exam, which is correctly oriented (confirmed against real
+    hardware via known subject positioning) -- and confirmed to display correctly when the
+    same acquisition is reconstructed *without* Open Recon at all, ruling out anything
+    upstream of the Open Recon round-trip (the raw acquisition itself, ICE's
+    reconstruction) as the cause.
 
-    Mutates `img` in place (pixel data + position only) -- every other header field and
-    all DICOM meta/attribute_string are left untouched.
+    Root cause: the Injector's DICOM conversion applies its own orientation handling to
+    any image unless the app explicitly opts out via the 'Keep_image_geometry' Meta
+    attribute -- documented and used throughout this same python-ismrmrd-server framework
+    (see e.g. invertcontrast.py's 'sendOriginal' feature, which does exactly this for its
+    own pass-through images: "Ensure Keep_image_geometry is set to not reverse image
+    orientation"). qsm.py's _append_dicom_series() already sets this for QSM/R2* (which is
+    exactly why they're correctly oriented) but never touched pass-through images'
+    attribute_string at all -- so whatever the Emitter originally sent (without this flag)
+    went straight back to the Injector unchanged, and the Injector's default reversal
+    applied. This is why the underlying pixel data itself was never actually wrong (an
+    earlier version of this fix incorrectly rotated the pixel data instead, based on
+    reasoning that didn't account for this) -- only the missing flag was.
+
+    Mutates `img` in place (attribute_string only) -- pixel data and every other header
+    field are left untouched.
     """
-    header = img.getHead()
-    nRows = img.data.shape[-2]
-    nCols = img.data.shape[-1]
-    # field_of_view[1]/[0] are the row/phase-direction and col/read-direction FOV in mm --
-    # same index convention as _get_voxel_size_mm's voxel_mm[0]/[1] (see its comment re:
-    # the fov.x/fov.y swap relative to naive row/col indexing).
-    rowSpacingMm = float(img.field_of_view[1]) / float(nRows)
-    colSpacingMm = float(img.field_of_view[0]) / float(nCols)
-    phaseDir = np.array(header.phase_dir, dtype=np.float64)  # direction of increasing row
-    readDir  = np.array(header.read_dir,  dtype=np.float64)  # direction of increasing column
-    oldPosition = np.array(header.position, dtype=np.float64)
-    # ImagePositionPatient denotes the center of pixel [row=0, col=0]; after a 180-degree
-    # rotation, the new [0,0] is physically where the old [nRows-1, nCols-1] was -- shift
-    # by both the row-direction and column-direction offsets to match (see qsm.py's own
-    # ImageRowDir/ImageColumnDir assignment below, which maps read_dir/phase_dir to DICOM's
-    # row-direction-cosines/column-direction-cosines -- i.e. column-index/row-index
-    # direction respectively, per the DICOM standard's (row cosines, column cosines) order).
-    newPosition = oldPosition + phaseDir * rowSpacingMm * (nRows - 1) + readDir * colSpacingMm * (nCols - 1)
-    header.position = tuple(float(v) for v in newPosition)
-    img.setHead(header)
-    img.data[:] = np.flip(np.flip(img.data, axis=-2), axis=-1)
+    meta = ismrmrd.Meta.deserialize(img.attribute_string)
+    meta['Keep_image_geometry'] = 1
+    img.attribute_string = meta.serialize()
 
 
 # ==============================================================================
@@ -874,7 +861,7 @@ def process_qsm(buffer, connection, config, metadata):
     # simply be discarded.
     nDerivedImages = len(imagesOut)
     for img in buffer.values():
-        _fix_passthrough_row_flip(img)
+        _fix_passthrough_orientation(img)
     imagesOut.extend(buffer.values())
 
     logging.info("Returning %d QSM/R2* image(s) (%d QSM series, %d R2* series) + "
