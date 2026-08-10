@@ -345,45 +345,6 @@ def _run_bet2(mag_nii_path, output_dir, fractional_intensity=0.5):
     return maskPath
 
 
-def _fix_passthrough_row_flip(img):
-    """Correct a real, reproducible orientation bug in the pass-through magnitude/phase
-    images: on real scanner hardware, their pixel data is row-flipped relative to their
-    own ImageOrientationPatient/ImagePositionPatient tags, while this app's own QSM/R2*
-    output -- built from the same acquisition geometry -- is correctly oriented (confirmed
-    against real scanner DICOM exports: anatomically anterior structures, e.g. the orbits,
-    render at the wrong end of the row axis relative to what the shared header implies;
-    cross-checked independently via nibabel's aff2axcodes against the raw
-    ImageOrientationPatient/ImagePositionPatient values). qsm.py otherwise never touches
-    pass-through images at all, so whatever the actual root cause (upstream in the
-    scanner's own Emitter/Injector, or an emergent property of the network's implicit
-    orientation handling -- extensive investigation ruled out every code-level explanation
-    within this repo: identical header tags, ismrmrd.Image.from_array(transpose=False)
-    confirmed to be a true no-op, and inference.py's conditional axis permute doesn't even
-    trigger for a near-axial acquisition), this makes the returned image internally
-    self-consistent, matching the orientation QSM/R2* already show.
-
-    Mutates `img` in place (pixel data + position only) -- every other header field and
-    all DICOM meta/attribute_string are left untouched.
-    """
-    header = img.getHead()
-    nRows = img.data.shape[-2]
-    # field_of_view[1] is the row/phase-direction FOV in mm -- same index convention as
-    # _get_voxel_size_mm's voxel_mm[0] (see its comment re: the fov.x/fov.y swap relative
-    # to naive row/col indexing).
-    rowSpacingMm = float(img.field_of_view[1]) / float(nRows)
-    phaseDir = np.array(header.phase_dir, dtype=np.float64)
-    oldPosition = np.array(header.position, dtype=np.float64)
-    # ImagePositionPatient denotes the center of pixel [row=0, col=0]; after flipping rows,
-    # the new row 0 is physically where the old row (nRows-1) was -- phase_dir is the
-    # direction of increasing row index (see qsm.py's own ImageColumnDir assignment below,
-    # which maps phase_dir to DICOM's column-direction-cosines -- i.e. row-index direction,
-    # per the DICOM standard's (row cosines, column cosines) = (read_dir, phase_dir) order).
-    newPosition = oldPosition + phaseDir * rowSpacingMm * (nRows - 1)
-    header.position = tuple(float(v) for v in newPosition)
-    img.setHead(header)
-    img.data[:] = np.flip(img.data, axis=-2)
-
-
 # ==============================================================================
 # Connection entrypoint
 # ==============================================================================
@@ -863,14 +824,15 @@ def process_qsm(buffer, connection, config, metadata):
                               pixelMax=R2S_PIXEL_MAX, processingHistory=['PYTHON', 'DEEPRELAXO'])
 
     # Pass through every originally-received image (all magnitude series, all echoes,
-    # phase) as their own series alongside the new QSM/R2* maps. Per Open Recon's
-    # documented behavior, only images explicitly returned by the app are saved to
+    # phase) unmodified, as their own series alongside the new QSM/R2* maps. Per Open
+    # Recon's documented behavior, only images explicitly returned by the app are saved to
     # DICOM/displayed on the scanner -- the standard ICE-reconstructed images are NOT
     # automatically preserved -- so without this, the original acquisition series would
-    # simply be discarded.
+    # simply be discarded. These are the exact objects received from the Emitter -- only
+    # their .data/.attribute_string were read (never mutated) above, so returning them
+    # here reproduces the same DICOMs the scanner would have produced without Open Recon
+    # involved.
     nDerivedImages = len(imagesOut)
-    for img in buffer.values():
-        _fix_passthrough_row_flip(img)
     imagesOut.extend(buffer.values())
 
     logging.info("Returning %d QSM/R2* image(s) (%d QSM series, %d R2* series) + "
