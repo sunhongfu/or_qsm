@@ -88,8 +88,32 @@ docker run --rm --gpus all \
 - `--gpus all` — optional. Drop it entirely on a host with no GPU/NVIDIA Container Toolkit;
   the pipeline falls back to CPU automatically (just far slower).
 - `--mode masked` (default) or `--mode wholehead` — see [Options reference](#6-options-reference).
+- `--bet-threshold` — only relevant with `--mode masked`; see
+  [Tuning the brain mask](#tuning-the-brain-mask) below.
 - Add `-v` (verbose) for detailed per-stage logging, useful the first time you run this or
   when troubleshooting.
+
+### Tuning the brain mask
+
+`--mode masked` runs FSL's `bet2` on the first echo to get a brain mask, using a
+fractional intensity threshold that defaults to `0.5` (bet2's own default). If the
+resulting QSM/R2* mask comes out **over-inclusive** (extra skull/scalp/non-brain tissue
+included) or **under-inclusive** (brain tissue cut off), re-run the same input with
+`--bet-threshold` adjusted:
+
+- **Smaller** values (e.g. `0.3`) → a **larger** brain outline.
+- **Larger** values (e.g. `0.7`) → a **smaller/tighter** brain outline.
+
+```bash
+docker run --rm --gpus all \
+    -v /path/to/dicoms:/input:ro \
+    -v /path/to/output:/output \
+    offline-qsm-recon --input /input --output /output --mode masked --bet-threshold 0.35
+```
+
+Must be between `0.0` and `1.0` — out-of-range values fail fast with a clear error before
+any reconstruction work starts. Has no effect in `--mode wholehead` (no brain extraction
+runs at all in that mode).
 
 The container prints top-level progress (`Converting DICOMs...`, `Starting reconstruction
 server...`, `Running reconstruction...`, `Converting results to DICOM...`, `Done.`) as it
@@ -139,6 +163,7 @@ Run `docker run --rm offline-qsm-recon --help` for the authoritative list. Summa
 | `--input` | *(required)* | Folder of input DICOMs (mount into the container, e.g. `/input`) |
 | `--output` | *(required)* | Folder to write result DICOMs to (e.g. `/output`) |
 | `--mode` | `masked` | `masked` (brain-extracted via FSL's `bet2`) or `wholehead` |
+| `--bet-threshold` | `0.5` | `bet2`'s fractional intensity threshold (0.0-1.0), only used in `--mode masked`. Smaller = larger brain outline; larger = smaller/tighter outline. See [Tuning the brain mask](#tuning-the-brain-mask). |
 | `--port` | `9002` | Internal loopback port for the local reconstruction server -- not exposed outside the container, essentially never needs changing |
 | `-v` / `--verbose` | off | Detailed per-stage logging |
 

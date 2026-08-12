@@ -124,6 +124,25 @@ def _get_bool_ui_param(config, key, default):
     return bool(value)
 
 
+def _get_float_ui_param(config, key, default, minimum, maximum):
+    """Read a numeric ('double') UI parameter, same string-vs-native caution as
+    _get_bool_ui_param above. Clamps to [minimum, maximum] and falls back to `default` if
+    the value can't be parsed as a float, so a malformed/out-of-range value from the UI
+    can never crash the reconstruction."""
+    value = _get_ui_param(config, key, default)
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        logging.warning("UI parameter '%s' = %r is not a valid number -- using default %s",
+                         key, value, default)
+        return default
+    if not (minimum <= value <= maximum):
+        logging.warning("UI parameter '%s' = %s is outside [%s, %s] -- clamping",
+                         key, value, minimum, maximum)
+        value = min(max(value, minimum), maximum)
+    return value
+
+
 # ==============================================================================
 # Per-image metadata extraction
 # ==============================================================================
@@ -536,13 +555,20 @@ def process_qsm(buffer, connection, config, metadata):
         logging.warning("Both QSM and R2* mapping are disabled via UI parameters -- only "
                         "the original acquisition images will be returned")
 
+    # bet2's fractional intensity threshold (-f): smaller values give a larger brain
+    # outline estimate, larger values give a smaller/tighter one. Exposed as a UI
+    # parameter (default 0.5, bet2's own default) mainly for retro-recon -- if the
+    # brain-masked result comes out over- or under-inclusive, re-run with this adjusted
+    # rather than falling back to whole-head.
+    betThreshold = _get_float_ui_param(config, 'betthreshold', 0.5, 0.0, 1.0)
+
     maskPath = None
     if useMask:
         # bet2 needs a plain 3D volume, not the 4D multi-echo array -- run it on the
         # first echo only, the resulting mask is reused for every echo below.
         mag3dPath = os.path.join(debugFolder, "mag_echo0_for_bet2.nii.gz")
         nib.save(nib.Nifti1Image(magVol[..., 0], affine), mag3dPath)
-        maskPath = _run_bet2(mag3dPath, debugFolder)
+        maskPath = _run_bet2(mag3dPath, debugFolder, fractional_intensity=betThreshold)
         if maskPath is None:
             logging.warning("Brain-masked reconstruction was requested but bet2 failed/was "
                              "unavailable -- falling back to whole-head")

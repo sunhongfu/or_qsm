@@ -131,6 +131,7 @@ Defined in `qsm_json_ui.json`'s `parameters` array, rendered as the Open Recon c
 | `reconmode` | choice (`masked`/`wholehead`) | `masked` | Which mask variant to reconstruct with: brain-masked (`bet2`) or whole-head. Applies to whichever of QSM/R2* below is enabled -- a single exam only ever produces one variant. |
 | `qsmenabled` | boolean | `true` | Run iQSM+ QSM reconstruction. |
 | `r2smapping` | boolean | `false` | Also run DeepRelaxo R2* mapping. Off by default -- noticeably slower than QSM alone; enable via retro-recon afterward if needed. Requires 2+ echoes regardless. |
+| `betthreshold` | double | `0.5` | `bet2`'s fractional intensity threshold (0-1), only used in Brain-masked mode. Smaller = larger brain outline; larger = smaller/tighter outline. Mainly for retro-recon -- if the brain mask came out over- or under-inclusive, re-run with this adjusted rather than falling back to whole-head. |
 
 Parameter `id`s must match `^[A-Za-z0-9]+$` (no underscores) -- an Open Recon schema constraint.
 

@@ -70,6 +70,12 @@ def main():
                          help="Reconstruction mode -- brain-masked (default, via FSL's "
                               "bet2) or whole-head. R2* is included automatically "
                               "whenever the input has 2+ echoes.")
+    parser.add_argument('--bet-threshold', type=float, default=0.5,
+                         help="bet2's fractional intensity threshold (0.0-1.0, default "
+                              "0.5), only used in --mode masked. Smaller values give a "
+                              "LARGER brain outline; larger values give a SMALLER/tighter "
+                              "one. Useful for re-running a batch if the default mask came "
+                              "out over- or under-inclusive.")
     parser.add_argument('--port', type=int, default=9002,
                          help="Internal loopback port for the local reconstruction "
                               "server (default: 9002) -- not exposed outside the "
@@ -83,6 +89,8 @@ def main():
 
     if not os.path.isdir(args.input):
         parser.error("--input directory not found: %s" % args.input)
+    if not (0.0 <= args.bet_threshold <= 1.0):
+        parser.error("--bet-threshold must be between 0.0 and 1.0 (got %s)" % args.bet_threshold)
     os.makedirs(args.output, exist_ok=True)
 
     workDir = tempfile.mkdtemp(prefix="offline_recon_")
@@ -105,7 +113,8 @@ def main():
     # defaults here instead.
     with open(os.path.join(workDir, "qsm.json"), 'w') as f:
         json.dump({"parameters": {"config": "qsm", "reconmode": args.mode,
-                                   "qsmenabled": True, "r2smapping": True}}, f)
+                                   "qsmenabled": True, "r2smapping": True,
+                                   "betthreshold": args.bet_threshold}}, f)
 
     serverProc = None
     try:
