@@ -153,13 +153,80 @@ reinstalling on real hardware:
 
 ## 6. Uninstalling / updating
 
-### Remove a single app
-Use the **Package Remover** tool (`or_sdk/tooling/PackageRemover/`), version-specific for
-VA60A vs VA61A(SP01) — follow `OpenReconPackageRemover guide.pdf` in that folder for install
-instructions and usage.
+### Remove specific version(s) — Package Remover tool
 
-### Remove all installed Open Recon apps
-Run `or_sdk/tooling/RemoveInstalledOpenReconApps.bat` **with administrative privileges**. A
+Source: `or_sdk/tooling/PackageRemover/` (`OpenReconPackageRemover guide.pdf` in that folder is
+the authoritative reference — this section summarizes it). Works on VA60A and VA61A.
+
+**One-time setup:**
+
+1. Disable (exit) kiosk mode on the scanner console: `Tab + Del + NumPad+`, then enter admin
+   credentials. This is the same unlock used for the install step in [section 2](#2-installation)
+   — kiosk mode is the normal locked-down state; you need to get *out* of it to reach an
+   admin-level Windows session that can write to `Program Files`.
+2. Copy both files from `or_sdk/tooling/PackageRemover/` onto the scanner host:
+
+   | File | Destination |
+   |---|---|
+   | `wip_OpenRecon_PackageRemover_Tool.exe` | `C:\Program Files\Siemens\Numaris\Mars\MriCustomer\bin` |
+   | `wip_OpenRecon_PackageRemover_System.IO.Abstractions.dll` | same folder |
+
+**Step 1 — see what's actually installed** (don't guess/track versions by hand — list them):
+
+```
+wip_OpenRecon_PackageRemover_Tool.exe -l
+```
+
+Lists every research package genuinely present on the system, in the form
+`<vendorname>_<appname>_V<major.minor.patch>` (e.g. `HMRIImagingCentre_iQSMPlus_V1.1.3`).
+
+**Step 2 — remove old version(s).** Two options:
+
+- **Interactive** (safest — no need to type exact version strings, pick from a numbered list):
+  ```
+  wip_OpenRecon_PackageRemover_Tool.exe -ldel
+  ```
+  Lists everything installed, lets you delete one at a time by number with a y/n confirmation,
+  loops until you're done.
+
+- **One-shot purge** (keeps only the single latest revision per major version, deletes every
+  other one automatically — e.g. if v1.1.3 through v1.1.8 are all installed, since they share
+  major version `1`, this keeps only v1.1.8 and purges the rest in one command):
+  ```
+  wip_OpenRecon_PackageRemover_Tool.exe -p
+  ```
+
+- To target one specific version manually instead: `-d <identifier>` (the exact string as
+  printed by `-l`), e.g.:
+  ```
+  wip_OpenRecon_PackageRemover_Tool.exe -d HMRIImagingCentre_iQSMPlus_V1.1.3
+  ```
+
+**Step 3 — reclaim disk space** (run last, after any deletions):
+
+```
+wip_OpenRecon_PackageRemover_Tool.exe --gc
+```
+
+Garbage-collects the now-unreferenced Docker image layers/blobs left behind by the deletions
+above.
+
+**Other flags**, for reference: `--cleanstore` rebuilds a clean `store.json` from the registry
+(rarely needed — only if the store file was hand-edited and needs resyncing without a registry
+change).
+
+**Notes:**
+- Deletion is non-destructive to future installs — the same package/version can be reinstalled
+  normally afterward.
+- No separate reboot/restart is required for this tool specifically — deletions and subsequent
+  `-l`/`-d`/`-p` calls can be run back-to-back. (Contrast with the full-wipe `.bat` option below,
+  which *does* require a restart.)
+
+### Remove all installed Open Recon apps (nuclear option)
+Run `or_sdk/tooling/RemoveInstalledOpenReconApps.bat` **with administrative privileges**. Unlike
+the Package Remover tool above, this doesn't target specific packages — it wipes the entire
+Docker registry directory, clears the local Docker image cache, and resets the installed-apps
+store (`OpenReconStore.json`) to empty, removing *every* installed Open Recon app at once. A
 "Restart Workspace" or full scanner reboot is required afterward for the removal to take full
 effect.
 

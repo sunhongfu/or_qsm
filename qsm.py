@@ -255,7 +255,14 @@ def _select_magnitude_series(buffer):
         for (t, si, sl, ct), img in buffer.items():
             if t == ismrmrd.IMTYPE_MAGNITUDE and si == seriesIndex:
                 imageType = mrdhelper.get_meta_value(ismrmrd.Meta.deserialize(img.attribute_string), 'ImageType')
-                return imageType is not None and 'NORM' in imageType
+                # ismrmrd.Meta.deserialize() returns a list when ImageType has multiple
+                # components (the normal case, e.g. ['ORIGINAL', 'PRIMARY', 'M', 'NORM', ...])
+                # but collapses to a plain string when there's only one -- checking 'NORM' in
+                # imageType would then do a *substring* match (e.g. falsely matching 'NORMAL'),
+                # so require an exact token match either way.
+                if isinstance(imageType, list):
+                    return 'NORM' in imageType
+                return imageType == 'NORM'
         return False
 
     normSeries = [si for si in allMagSeries if has_norm_flag(si)]

@@ -28,3 +28,5 @@ DeepRelaxo/
 # iQSM (https://github.com/sunhongfu/iQSM, the original non-orientation-adaptive
 # predecessor of iQSM_Plus) -- same pattern as iQSM_Plus/DeepRelaxo above.
 iQSM/
+
+or_sdk/
