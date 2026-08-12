@@ -274,6 +274,9 @@ def main(args):
                 if meta.get('WindowWidth') is not None:
                     dicomDset.WindowWidth = meta['WindowWidth']
 
+                if meta.get('PixelPaddingValue') is not None:
+                    dicomDset.PixelPaddingValue = int(meta['PixelPaddingValue'])
+
                 if meta.get('EchoTime') is not None:
                     dicomDset.EchoTime = meta['EchoTime']
 

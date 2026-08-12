@@ -329,7 +329,7 @@ def _build_volumes(magKeys, phaseKeys, nSlices, nEchoes):
     return magVol, phaseVol, sampleImg
 
 
-def _run_bet2(mag_nii_path, output_dir, fractional_intensity=0.5):
+def _run_bet2(mag_nii_path, output_dir, fractional_intensity=0.4):
     """Run FSL's bet2 on a magnitude volume, returning the path to the binary brain mask
     NIfTI, or None if bet2 isn't available or the run fails. A failure here should never
     abort the whole reconstruction, only skip masking."""
@@ -560,7 +560,7 @@ def process_qsm(buffer, connection, config, metadata):
     # parameter (default 0.5, bet2's own default) mainly for retro-recon -- if the
     # brain-masked result comes out over- or under-inclusive, re-run with this adjusted
     # rather than falling back to whole-head.
-    betThreshold = _get_float_ui_param(config, 'betthreshold', 0.5, 0.0, 1.0)
+    betThreshold = _get_float_ui_param(config, 'betthreshold', 0.4, 0.0, 1.0)
 
     maskPath = None
     if useMask:
@@ -733,8 +733,18 @@ def process_qsm(buffer, connection, config, metadata):
     # ------------------------------------------------------------------
     QSM_DISPLAY_RANGE_PPM = 4.0  # clip/quantize over [-4, +4] ppm
     QSM_PIXEL_MAX = 4095
-    qsmQuantSlope     = (2.0 * QSM_DISPLAY_RANGE_PPM) / QSM_PIXEL_MAX
-    qsmQuantIntercept = -QSM_DISPLAY_RANGE_PPM
+    # Raw pixel 0 is reserved and never produced by our own quantization below -- real
+    # scanner DICOMs (mag, phase, and QSM/R2* alike, live and offline) have been observed
+    # to have their outermost border/gap pixels filled with literal raw 0, regardless of
+    # what that value maps to for that particular series' own RescaleSlope/Intercept. This
+    # is harmless for series whose own zero-point already sits at raw 0 (magnitude, R2*)
+    # but previously landed QSM's border on this range's -4ppm floor, displaying as an
+    # alarming, physiologically-implausible "-4000" ppb. Reserving raw 0 here (never
+    # legitimate QSM data) and marking it via PixelPaddingValue below means a compliant
+    # DICOM viewer treats it as non-data instead of a fabricated extreme value.
+    QSM_PIXEL_MIN = 1
+    qsmQuantSlope     = (2.0 * QSM_DISPLAY_RANGE_PPM) / (QSM_PIXEL_MAX - QSM_PIXEL_MIN)
+    qsmQuantIntercept = -QSM_DISPLAY_RANGE_PPM  # real value at raw == QSM_PIXEL_MIN
 
     # The DICOM-facing RescaleSlope/Intercept (and WindowCenter/Width) report values in
     # ppb (ppm * 1000) rather than ppm directly: a scanner's window/level tool has been
@@ -756,7 +766,11 @@ def process_qsm(buffer, connection, config, metadata):
     # reported, which a compliant viewer combines correctly regardless of the difference.
     QSM_DICOM_UNIT_SCALE = 1000.0  # ppm -> ppb, tags only
     qsmDicomSlope     = qsmQuantSlope * QSM_DICOM_UNIT_SCALE
-    qsmDicomIntercept = qsmQuantIntercept * QSM_DICOM_UNIT_SCALE
+    # DICOM's RescaleIntercept is defined relative to raw pixel 0 (real = raw*slope +
+    # intercept, no separate offset term), but qsmQuantIntercept above is defined relative
+    # to QSM_PIXEL_MIN (the first non-reserved raw value) -- translate between the two here
+    # rather than letting the offset get silently dropped.
+    qsmDicomIntercept = (qsmQuantIntercept - QSM_PIXEL_MIN * qsmQuantSlope) * QSM_DICOM_UNIT_SCALE
 
     # R2* is non-negative and naturally spans tens-to-~100+ s^-1 in brain tissue, unlike
     # QSM's tiny +/-4ppm range, so no unit-inflation trick is needed for a scanner W/L tool
@@ -767,32 +781,29 @@ def process_qsm(buffer, connection, config, metadata):
     # clinical experience if needed.
     R2S_DISPLAY_RANGE_MAX = 250.0  # clip/quantize over [0, 250] s^-1
     R2S_PIXEL_MAX = 4095
-    r2sQuantSlope     = R2S_DISPLAY_RANGE_MAX / R2S_PIXEL_MAX
-    r2sQuantIntercept = 0.0
+    R2S_PIXEL_MIN = 1  # 0 reserved as PixelPaddingValue -- see QSM_PIXEL_MIN comment above
+    r2sQuantSlope     = R2S_DISPLAY_RANGE_MAX / (R2S_PIXEL_MAX - R2S_PIXEL_MIN)
+    r2sQuantIntercept = 0.0  # real value at raw == R2S_PIXEL_MIN
+    r2sDicomSlope     = r2sQuantSlope
+    r2sDicomIntercept = r2sQuantIntercept - R2S_PIXEL_MIN * r2sQuantSlope
 
     imagesOut = []
 
     def _append_dicom_series(vol, seriesIndex, seqDescAdditional, imageComments,
                               quantSlope, quantIntercept, rescaleType,
                               windowCenter, windowWidth, pixelMax, processingHistory,
-                              dicomSlope=None, dicomIntercept=None):
+                              dicomSlope, dicomIntercept, pixelMin=0):
         """Quantize `vol` (in its own natural units) into uint16 using quantSlope/
-        quantIntercept, and build one MRD image per slice. dicomSlope/dicomIntercept --
-        the values actually written into the DICOM RescaleSlope/RescaleIntercept tags --
-        default to quantSlope/quantIntercept (the common case: R2*, where the pixel data
-        and the reported units are the same) but can be given separately when the DICOM
-        tags intentionally report different units than the data was quantized in (QSM;
-        see the ppb comment above quantSlope's definition). Keeping these as two distinct,
-        explicitly-named parameter pairs -- rather than one pair implicitly serving both
-        purposes -- is deliberate: passing data quantized in one unit against tags
+        quantIntercept (defined relative to raw pixel `pixelMin`, the first non-reserved
+        raw value -- see QSM_PIXEL_MIN/R2S_PIXEL_MIN above), and build one MRD image per
+        slice. dicomSlope/dicomIntercept -- the values actually written into the DICOM
+        RescaleSlope/RescaleIntercept tags, defined relative to raw pixel 0 per DICOM
+        convention -- must be given explicitly by the caller rather than defaulting to
+        quantSlope/quantIntercept: passing data quantized in one unit/offset against tags
         declared in another is exactly the bug that once destroyed all QSM contrast (every
         voxel quantized to one of two raw codes at the zero-crossing) with no error or
         warning anywhere.
         """
-        if dicomSlope is None:
-            dicomSlope = quantSlope
-        if dicomIntercept is None:
-            dicomIntercept = quantIntercept
 
         # `.astype(np.uint16)` on a NaN/Inf value is undefined behavior in C -- confirmed
         # to silently differ by platform rather than raising, so this guarantees every
@@ -805,7 +816,8 @@ def process_qsm(buffer, connection, config, metadata):
                             "set to 0", seriesIndex, nBad, vol.size)
             vol = np.nan_to_num(vol, nan=0.0, posinf=0.0, neginf=0.0)
 
-        volQuantized = np.clip(np.round((vol - quantIntercept) / quantSlope), 0, pixelMax).astype(np.uint16)
+        volQuantized = (pixelMin + np.clip(np.round((vol - quantIntercept) / quantSlope),
+                                            0, pixelMax - pixelMin)).astype(np.uint16)
 
         for sl in range(nSlices):
             templateImg = magKeys.get((sl, 0)) or phaseKeys.get((sl, 0))
@@ -845,6 +857,15 @@ def process_qsm(buffer, connection, config, metadata):
             tmpMeta['RescaleIntercept']               = "{:.6f}".format(dicomIntercept)
             tmpMeta['RescaleType']                    = rescaleType
             tmpMeta['Keep_image_geometry']            = 1
+            if pixelMin > 0:
+                # Raw pixel 0 is reserved (never produced by the quantization above) --
+                # mark it via the standard DICOM padding-value mechanism so a compliant
+                # viewer treats it as non-data rather than rescaling it into a fabricated
+                # real-world number (see QSM_PIXEL_MIN comment near this function's
+                # callers). Best-effort: mrd2dicom.py (offline path) honors this; whether
+                # Open Recon's Injector (live path) preserves it through to the final DICOM
+                # is unconfirmed, unlike Keep_image_geometry above.
+                tmpMeta['PixelPaddingValue'] = 0
 
             if tmpMeta.get('ImageRowDir') is None:
                 tmpMeta['ImageRowDir'] = ["{:.18f}".format(oldHeader.read_dir[0]), "{:.18f}".format(oldHeader.read_dir[1]), "{:.18f}".format(oldHeader.read_dir[2])]
@@ -868,7 +889,8 @@ def process_qsm(buffer, connection, config, metadata):
         _append_dicom_series(qsmVol, seriesIndex, seqDescAdditional, imageComments,
                               quantSlope=qsmQuantSlope, quantIntercept=qsmQuantIntercept, rescaleType='PPB',
                               windowCenter=0.0, windowWidth=1.0 * QSM_DICOM_UNIT_SCALE,
-                              pixelMax=QSM_PIXEL_MAX, processingHistory=['PYTHON', 'IQSM_PLUS'],
+                              pixelMax=QSM_PIXEL_MAX, pixelMin=QSM_PIXEL_MIN,
+                              processingHistory=['PYTHON', 'IQSM_PLUS'],
                               dicomSlope=qsmDicomSlope, dicomIntercept=qsmDicomIntercept)
 
     for label, seriesIndex, seqDescAdditional, imageComments, r2sVol in r2sResults:
@@ -884,7 +906,9 @@ def process_qsm(buffer, connection, config, metadata):
         _append_dicom_series(r2sVol, seriesIndex, seqDescAdditional, imageComments,
                               quantSlope=r2sQuantSlope, quantIntercept=r2sQuantIntercept, rescaleType='R2S',
                               windowCenter=R2S_DISPLAY_RANGE_MAX / 2, windowWidth=R2S_DISPLAY_RANGE_MAX,
-                              pixelMax=R2S_PIXEL_MAX, processingHistory=['PYTHON', 'DEEPRELAXO'])
+                              pixelMax=R2S_PIXEL_MAX, pixelMin=R2S_PIXEL_MIN,
+                              processingHistory=['PYTHON', 'DEEPRELAXO'],
+                              dicomSlope=r2sDicomSlope, dicomIntercept=r2sDicomIntercept)
 
     # Pass through every originally-received image (all magnitude series, all echoes,
     # phase) as their own series alongside the new QSM/R2* maps. Per Open Recon's

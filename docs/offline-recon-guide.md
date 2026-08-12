@@ -96,7 +96,8 @@ docker run --rm --gpus all \
 ### Tuning the brain mask
 
 `--mode masked` runs FSL's `bet2` on the first echo to get a brain mask, using a
-fractional intensity threshold that defaults to `0.5` (bet2's own default). If the
+fractional intensity threshold that defaults to `0.4` (bet2's own default is `0.5`; this
+repo defaults slightly lower after finding `0.5` under-inclusive on real scanner data). If the
 resulting QSM/R2* mask comes out **over-inclusive** (extra skull/scalp/non-brain tissue
 included) or **under-inclusive** (brain tissue cut off), re-run the same input with
 `--bet-threshold` adjusted:
@@ -163,7 +164,7 @@ Run `docker run --rm offline-qsm-recon --help` for the authoritative list. Summa
 | `--input` | *(required)* | Folder of input DICOMs (mount into the container, e.g. `/input`) |
 | `--output` | *(required)* | Folder to write result DICOMs to (e.g. `/output`) |
 | `--mode` | `masked` | `masked` (brain-extracted via FSL's `bet2`) or `wholehead` |
-| `--bet-threshold` | `0.5` | `bet2`'s fractional intensity threshold (0.0-1.0), only used in `--mode masked`. Smaller = larger brain outline; larger = smaller/tighter outline. See [Tuning the brain mask](#tuning-the-brain-mask). |
+| `--bet-threshold` | `0.4` | `bet2`'s fractional intensity threshold (0.0-1.0), only used in `--mode masked`. Smaller = larger brain outline; larger = smaller/tighter outline. See [Tuning the brain mask](#tuning-the-brain-mask). |
 | `--port` | `9002` | Internal loopback port for the local reconstruction server -- not exposed outside the container, essentially never needs changing |
 | `-v` / `--verbose` | off | Detailed per-stage logging |
 

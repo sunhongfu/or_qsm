@@ -70,9 +70,9 @@ def main():
                          help="Reconstruction mode -- brain-masked (default, via FSL's "
                               "bet2) or whole-head. R2* is included automatically "
                               "whenever the input has 2+ echoes.")
-    parser.add_argument('--bet-threshold', type=float, default=0.5,
+    parser.add_argument('--bet-threshold', type=float, default=0.4,
                          help="bet2's fractional intensity threshold (0.0-1.0, default "
-                              "0.5), only used in --mode masked. Smaller values give a "
+                              "0.4), only used in --mode masked. Smaller values give a "
                               "LARGER brain outline; larger values give a SMALLER/tighter "
                               "one. Useful for re-running a batch if the default mask came "
                               "out over- or under-inclusive.")

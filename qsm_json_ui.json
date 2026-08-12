@@ -1,17 +1,17 @@
 {
   "general": {
     "name": { "en": "iQSM_Plus" },
-    "version": "1.1.9",
+    "version": "1.1.10",
     "vendor": "HMRI Imaging Centre",
     "information": { "en": "Deep-learning QSM (iQSM+) and R2* (DeepRelaxo) reconstruction from multi-echo GRE magnitude/phase images." },
     "id": "iQSMPlus",
     "regulatory_information": {
       "device_trade_name": "iQSM_Plus",
-      "production_identifier": "1.1.9",
+      "production_identifier": "1.1.10",
       "manufacturer_address": "Kookaburra Circuit Lot 1, New Lambton Heights, NSW, AU, 2305",
       "made_in": "AU",
-      "manufacture_date": "2026/08/12",
-      "material_number": "iQSM_Plus_1.1.9",
+      "manufacture_date": "2026/08/13",
+      "material_number": "iQSM_Plus_1.1.10",
       "gtin": "00000000000000",
       "udi": "(00)00000000000000(00)1.0.0",
       "safety_advices": "Research use only. Not for diagnostic use.",
@@ -91,10 +91,10 @@
       "id": "betthreshold",
       "type": "double",
       "label": { "en": "BET Threshold" },
-      "information": { "en": "Fractional intensity threshold (0-1) for FSL bet2 brain extraction, used only in Brain-masked mode. Default 0.5. Smaller values give a LARGER brain outline; larger values give a SMALLER/tighter one. Only relevant if Reconstruction Mode is Brain-masked. Mainly useful for retro-recon: if the brain mask came out over- or under-inclusive, re-run with this adjusted." },
+      "information": { "en": "Fractional intensity threshold (0-1) for FSL bet2 brain extraction, used only in Brain-masked mode. Default 0.4. Smaller values give a LARGER brain outline; larger values give a SMALLER/tighter one. Only relevant if Reconstruction Mode is Brain-masked. Mainly useful for retro-recon: if the brain mask came out over- or under-inclusive, re-run with this adjusted." },
       "minimum": 0.0,
       "maximum": 1.0,
-      "default": 0.5
+      "default": 0.4
     }
   ]
 }
