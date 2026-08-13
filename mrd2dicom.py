@@ -288,7 +288,24 @@ def main(args):
                 # ROI
 
                 # Write DICOM files
-                fileName = "%02.0f_%s_%03.0f.dcm" % (dicomDset.SeriesNumber, dicomDset.SeriesDescription, dicomDset.InstanceNumber)
+                #
+                # The echo (MRD `contrast`) is part of the filename because InstanceNumber
+                # (= mrdImg.image_index) restarts at 1 for each echo within a series, so
+                # series/InstanceNumber alone is NOT unique for multi-echo data -- every echo
+                # writes to the same set of names and all but the last-written are silently
+                # overwritten. Hit on real data: a 3-series x 5-echo x 144-slice acquisition
+                # reported "Wrote 2448 DICOM files" but left only 720 on disk, keeping one
+                # arbitrary echo per series. Only shows up when the source splits each echo
+                # into its own series (e.g. re-processing exported Open Recon output, whose
+                # per-echo SeriesNumbers get regrouped by dicom2mrd.py) -- when a series
+                # carries all echoes with image_index running 1..N*echoes, the old naming
+                # happened to stay unique, which is why this went unnoticed.
+                #
+                # Echo before slice so a plain alphabetical listing groups each echo into one
+                # contiguous run of slices -- that's the order image viewers load a folder in
+                # (ImageJ's File > Import > Image Sequence, etc.), so echo-major naming gives
+                # one clean 3D stack per echo instead of interleaving all echoes together.
+                fileName = "%02.0f_%s_e%02.0f_%03.0f.dcm" % (dicomDset.SeriesNumber, dicomDset.SeriesDescription, mrdImg.contrast + 1, dicomDset.InstanceNumber)
                 print("  Writing file %s" % fileName)
                 # implicit_vr/little_endian passed explicitly (matching file_meta.TransferSyntaxUID
                 # above) because save_as() still reads the deprecated is_implicit_VR/is_little_endian

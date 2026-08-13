@@ -76,15 +76,36 @@ produce wrong output. Nested subfolders are fine — the folder is walked recurs
 ## 4. Running it
 
 ```bash
-docker run --rm --gpus all \
+mkdir -p /path/to/output
+docker run --rm --gpus all --user "$(id -u):$(id -g)" \
     -v /path/to/dicoms:/input:ro \
     -v /path/to/output:/output \
     offline-qsm-recon --input /input --output /output --mode masked
 ```
 
 - `-v /path/to/dicoms:/input:ro` — your input DICOM folder, mounted read-only.
-- `-v /path/to/output:/output` — where the result DICOMs get written (created if it
-  doesn't exist).
+- `-v /path/to/output:/output` — where the result DICOMs get written.
+- `--user "$(id -u):$(id -g)"` — **recommended.** Containers run as `root` by default, so
+  without this every output DICOM lands owned by `root:root` and you need `sudo` to
+  delete, move or overwrite them. Running as yourself makes the output ordinary files you
+  own. The pipeline needs no root privileges, so this is safe.
+- `mkdir -p /path/to/output` beforehand — **required when using `--user`**, not just tidy.
+  If the mount target doesn't exist, Docker creates it as `root:root` *before* the
+  container starts; the container then runs as your (non-root) UID and cannot write into
+  it, so the run fails at the very last step with:
+
+  ```
+  PermissionError: [Errno 13] Permission denied: '/output/00_..._001_e05.dcm'
+  ```
+
+  Frustratingly this comes *after* the whole reconstruction has completed. Pre-creating
+  the folder is worth doing even without `--user`: removing a file depends on write
+  permission on its **parent directory**, not on who owns the file, so a root-owned output
+  folder needs `sudo` even to clear out.
+
+  To recover from an already-created root-owned folder, no `sudo` is needed as long as you
+  own its parent — `rmdir /path/to/output && mkdir -p /path/to/output` (use
+  `sudo rm -rf` instead if it already has files in it).
 - `--gpus all` — optional. Drop it entirely on a host with no GPU/NVIDIA Container Toolkit;
   the pipeline falls back to CPU automatically (just far slower).
 - `--mode masked` (default) or `--mode wholehead` — see [Options reference](#6-options-reference).
@@ -170,11 +191,22 @@ Run `docker run --rm offline-qsm-recon --help` for the authoritative list. Summa
 
 ## 7. Output format
 
-DICOM files in `--output`, one file per slice per series, named
-`<series>_<protocol-name>_<slice>.dcm` (matching `mrd2dicom.py`'s existing convention). One
+DICOM files in `--output`, one file per slice per echo per series, named
+`<series>_<protocol-name>_e<echo>_<slice>.dcm` (`mrd2dicom.py`'s convention). One
 QSM series and, if the input had ≥ 2 echoes, one R2* series — plus the original
 input magnitude/phase series passed through unmodified (so nothing from the source
 acquisition is lost).
+
+The `e<echo>` field is 1-based and always present, including on the single-echo derived
+QSM/R2* series (always `e01`). It is load-bearing, not decorative: DICOM `InstanceNumber`
+restarts at 1 for every echo, so `<series>_<name>_<slice>` alone is not unique for
+multi-echo data — without the echo field each echo overwrites the previous one and only
+the last-written survives.
+
+Echo comes **before** slice so that a plain alphabetical listing groups each echo into one
+contiguous run of slices. That's the order viewers load a folder in, so
+`File > Import > Image Sequence` in ImageJ gives one clean 3D stack per echo rather than
+interleaving all echoes together.
 
 | Series | Content | Units | Present when |
 |---|---|---|---|
@@ -209,6 +241,25 @@ RescaleIntercept` (any compliant DICOM viewer does this automatically).
   copy of the output DICOMs, both cleaned up automatically when the container exits. Keep
   an eye on `docker system df` if you're running this repeatedly — Docker's build cache and
   old image layers can accumulate significant space over many rebuilds.
+- **`PermissionError: [Errno 13] Permission denied: '/output/...'` at the very end, after
+  the reconstruction finished** — you used `--user` but the output folder didn't exist, so
+  Docker created it as `root:root` and your non-root container UID can't write into it.
+  Fix with `rmdir /path/to/output && mkdir -p /path/to/output` (no `sudo` needed if you
+  own the parent directory), then re-run. See [Running it](#4-running-it).
+- **Output DICOMs are owned by `root` / "permission denied" deleting them** — you ran
+  without `--user "$(id -u):$(id -g)"` (see [Running it](#4-running-it)). The files are
+  mode `644`, so they still *open* fine in any viewer; only writing/deleting is blocked.
+  Take ownership of what's already there with
+  `sudo chown -R "$(id -u):$(id -g)" /path/to/output`, and add `--user` next time. If the
+  output *folder* itself is root-owned (Docker created it because it didn't exist), you'll
+  need `sudo` for that `chown` even though you can read everything inside.
+- **Fewer output files than expected / only one echo per input series** — fixed; make sure
+  your image is current. Output filenames carry an `_e<echo>` suffix precisely because
+  `InstanceNumber` restarts per echo (see [Output format](#7-output-format)). An image
+  built before that fix silently overwrites echoes, so `Wrote N DICOM files` reports far
+  more files than end up on disk. Rebuild both images (see [Getting the image](#2-getting-the-image))
+  — and note that rebuilding only `offline-qsm-recon` is not enough, since `mrd2dicom.py`
+  lives in the base image.
 - **`--input directory not found`** — check the host path in `-v host_path:/input:ro`
   actually exists and is readable; this error means the container-internal `/input` path
   (post-mount) wasn't a directory, usually because the host-side path was wrong or the
