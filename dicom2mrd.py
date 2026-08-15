@@ -140,9 +140,16 @@ def CreateMrdHeader(dset):
         mrdHead.sequenceParameters.flipAngle_deg = float(dset.SharedFunctionalGroupsSequence[0].MRTimingAndRelatedParametersSequence[0].FlipAngle)
         mrdHead.sequenceParameters.TE            =       dset.SharedFunctionalGroupsSequence[0].MREchoSequence[0].EffectiveEchoTime
     else:
-        mrdHead.sequenceParameters.TR            = float(dset.RepetitionTime)
-        mrdHead.sequenceParameters.flipAngle_deg = float(dset.FlipAngle)
-        mrdHead.sequenceParameters.TE            = float(dset.EchoTime)
+        # Set each only if the tag is actually present. Every field of MRD's
+        # sequenceParameters is optional, but a bare `dset.FlipAngle` raises AttributeError
+        # on any DICOM that omits it -- which aborts the whole conversion over a value
+        # nothing downstream in this repo even reads. Seen on Pulseq-generated DICOMs
+        # (Siemens XA61 export), which carry RepetitionTime and EchoTime but no FlipAngle.
+        # TE here is only a placeholder anyway: it's overwritten below with the full
+        # per-echo list once all series have been read.
+        if hasattr(dset, 'RepetitionTime'): mrdHead.sequenceParameters.TR            = float(dset.RepetitionTime)
+        if hasattr(dset, 'FlipAngle'):      mrdHead.sequenceParameters.flipAngle_deg = float(dset.FlipAngle)
+        if hasattr(dset, 'EchoTime'):       mrdHead.sequenceParameters.TE            = float(dset.EchoTime)
 
     # -------------------- User parameters --------------------
     userParameters = ismrmrd.xsd.userParametersType()
@@ -339,7 +346,12 @@ def main(args):
             else:
                 ImagePositionPatient    = tmpDset.ImagePositionPatient
                 ImageOrientationPatient = tmpDset.ImageOrientationPatient
-                AcquisitionTime         = tmpDset.AcquisitionTime
+                # Optional: Pulseq-generated DICOMs (Siemens XA61 export) omit AcquisitionTime.
+                # Geometry above is genuinely required and left unguarded on purpose, but the
+                # acquisition timestamp is only informational metadata -- nothing in this repo's
+                # reconstruction path reads it -- so a missing value leaves the MRD field at its
+                # default rather than aborting the conversion.
+                AcquisitionTime         = getattr(tmpDset, 'AcquisitionTime', None)
                 try:
                     TriggerTime = float(tmpDset.TriggerTime)
                 except:
@@ -350,7 +362,8 @@ def main(args):
             tmpMrdImg.read_dir                 = tuple(np.stack(ImageOrientationPatient[0:3]))
             tmpMrdImg.phase_dir                = tuple(np.stack(ImageOrientationPatient[3:7]))
             tmpMrdImg.slice_dir                = tuple(np.cross(np.stack(ImageOrientationPatient[0:3]), np.stack(ImageOrientationPatient[3:7])))
-            tmpMrdImg.acquisition_time_stamp   = round((int(AcquisitionTime[0:2])*3600 + int(AcquisitionTime[2:4])*60 + int(AcquisitionTime[4:6]) + float(AcquisitionTime[6:]))*1000/2.5)
+            if AcquisitionTime:
+                tmpMrdImg.acquisition_time_stamp = round((int(AcquisitionTime[0:2])*3600 + int(AcquisitionTime[2:4])*60 + int(AcquisitionTime[4:6]) + float(AcquisitionTime[6:]))*1000/2.5)
             if TriggerTime:
                 tmpMrdImg.physiology_time_stamp[0] = round(int(TriggerTime/2.5))
 
