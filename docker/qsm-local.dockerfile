@@ -45,8 +45,8 @@ RUN test -f "$IQSM_PLUS_DIR/inference.py" || \
 # Checkpoints are expected to already be present in the local iQSM_Plus/ clone (same
 # prerequisite as its code) -- see qsm.dockerfile's equivalent step for the full
 # rationale. Fail loudly here rather than produce an image that only errors at runtime.
-RUN test -f "$IQSM_PLUS_DIR/checkpoints/iQSM_plus.pth" && \
-    test -f "$IQSM_PLUS_DIR/checkpoints/LoTLayer_chi.pth" || \
+RUN test -f "$IQSM_PLUS_DIR/checkpoints/healthy/iQSM_plus.pth" && \
+    test -f "$IQSM_PLUS_DIR/checkpoints/healthy/LoTLayer_chi.pth" || \
     { echo "ERROR: iQSM_Plus checkpoints not found under $IQSM_PLUS_DIR/checkpoints -- see" \
            "readme.md's 'Building the Docker image' section (download them before building)." >&2; \
       exit 1; }

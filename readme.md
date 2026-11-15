@@ -27,7 +27,7 @@ A Siemens [Open Recon](https://www.siemens-healthineers.com/magnetic-resonance-i
    - If "Reconstruct QSM" is enabled (default: on), calls into [iQSM_Plus](https://github.com/sunhongfu/iQSM_Plus) (`run_iqsm_plus()`, cloned locally as a gitignored subfolder of this repo -- see [Building the Docker image](#building-the-docker-image) -- rather than tracked in this repo's own git history) to run the actual deep-learning QSM reconstruction.
    - If "Reconstruct R2* Mapping" is enabled (default: **off** -- noticeably slower than QSM alone; enable via retro-recon afterward if needed) and the acquisition has at least 2 echoes, also calls into [DeepRelaxo](https://github.com/sunhongfu/DeepRelaxo) (`estimate_r2s()` + `denoise_r2s_map()`, same gitignored-subfolder pattern) to run its two-stage R2* mapping, reusing the same magnitude NIfTIs and bet2 mask already prepared above -- no separate brain extraction, and independent of whether QSM itself ran. Single-echo acquisitions can't support R2* mapping (needs at least 2 points to fit a decay curve) regardless of the toggle.
    - Quantizes the resulting maps (ppm for QSM, s⁻¹ for R2*) into uint16 DICOM pixel data with fixed rescale slopes/intercepts.
-4. Whichever of QSM (`image_series_index=100` brain-masked / `101` whole-head) and R2* (`102` brain-masked / `103` whole-head) were enabled -- **and** the original acquisition series, orientation-corrected (see below) -- are sent back -- Open Recon only saves/displays images an app explicitly returns, so passing through the originals is what keeps them from being silently discarded. This holds even if reconstruction itself fails partway through: the original images are always returned, degrading to "no QSM/R2* this exam" rather than "no images at all" (see `process()`'s exception handling in [qsm.py](qsm.py)). A single exam only ever produces one mask variant's output; re-run with a different "Reconstruction Mode" / toggle selection (via retro-recon, if supported) to get another combination.
+4. Whichever of QSM (`image_series_index=100` brain-masked / `101` whole-head, plus a phase-type copy at `104` / `105`, see below) and R2* (`102` brain-masked / `103` whole-head) were enabled -- **and** the original acquisition series, orientation-corrected (see below) -- are sent back -- Open Recon only saves/displays images an app explicitly returns, so passing through the originals is what keeps them from being silently discarded. This holds even if reconstruction itself fails partway through: the original images are always returned, degrading to "no QSM/R2* this exam" rather than "no images at all" (see `process()`'s exception handling in [qsm.py](qsm.py)). A single exam only ever produces one mask variant's output; re-run with a different "Reconstruction Mode" / toggle selection (via retro-recon, if supported) to get another combination.
 
 **Pass-through orientation fix:** on real scanner hardware, the original magnitude/phase images displayed rotated 180 degrees relative to the QSM/R2* output from the same exam (confirmed against real hardware via known subject positioning), while reconstructing the same acquisition *without* Open Recon at all was correctly oriented -- ruling out the raw acquisition/ICE reconstruction itself. Root cause: Open Recon's Injector applies its own orientation handling to any returned image unless the app explicitly opts out via the `Keep_image_geometry` Meta attribute -- a documented, established pattern used throughout this codebase's underlying [kspaceKelvin/python-ismrmrd-server](https://github.com/kspaceKelvin/python-ismrmrd-server) framework (e.g. `invertcontrast.py`'s `sendOriginal` feature does the same for its own pass-through images). `qsm.py`'s `_append_dicom_series()` already sets this for QSM/R2* output (why they were never affected) but never touched pass-through images' `attribute_string` at all -- so whatever the Emitter originally sent (without the flag) went straight back to the Injector unchanged, and its default reversal applied. `_fix_passthrough_orientation()` now sets `Keep_image_geometry=1` on pass-through images before they're sent back -- `attribute_string` only, pixel data and every other header field untouched.
 
@@ -70,12 +70,14 @@ git clone https://github.com/sunhongfu/iQSM_Plus.git iQSM_Plus
 # but only into the image itself, which doesn't help the devcontainer or the "Start QSM
 # server (Docker)" task, since their live bind-mount overwrites the image's checkpoints/
 # with this (empty) local one -- so do it here once and every workflow has them.
-mkdir -p iQSM_Plus/checkpoints
+# qsm.py uses the healthy-brain model (IQSM_PLUS_MODEL), whose weights live under
+# healthy/ on Hugging Face and checkpoints/healthy/ locally.
+mkdir -p iQSM_Plus/checkpoints/healthy
 python3 -c "
 import os, urllib.request
-base = 'https://huggingface.co/sunhongfu/iQSM_Plus/resolve/main'
+base = 'https://huggingface.co/sunhongfu/iQSM_Plus/resolve/main/healthy'
 for name in ['iQSM_plus.pth', 'LoTLayer_chi.pth']:
-    local = f'iQSM_Plus/checkpoints/{name}'
+    local = f'iQSM_Plus/checkpoints/healthy/{name}'
     if not os.path.exists(local):
         urllib.request.urlretrieve(f'{base}/{name}', local)
 "
@@ -134,6 +136,7 @@ Defined in `qsm_json_ui.json`'s `parameters` array, rendered as the Open Recon c
 | `qsmenabled` | boolean | `true` | Run iQSM+ QSM reconstruction. |
 | `r2smapping` | boolean | `false` | Also run DeepRelaxo R2* mapping. Off by default -- noticeably slower than QSM alone; enable via retro-recon afterward if needed. Requires 2+ echoes regardless. |
 | `betthreshold` | double | `0.4` | `bet2`'s fractional intensity threshold (0-1), only used in Brain-masked mode. Smaller = larger brain outline; larger = smaller/tighter outline. Mainly for retro-recon -- if the brain mask came out over- or under-inclusive, re-run with this adjusted rather than falling back to whole-head. |
+| `qsmphasecopy` | boolean | `true` | Also write QSM as a phase-type series (`image_series_index` 104 brain-masked / 105 whole-head, sequence description suffix `_PHTYPE`). The scanner fills invalid edge lines of returned images (present even without distortion correction, more with it) with raw 0 for magnitude-type images, which reads as -4 ppm in the standard QSM series, but with raw 2048 for phase-type images, which is exactly 0 ppm here. Stored in the Siemens phase convention, real = 2*raw - 4096 ppb, so +/-4.094 ppm in 2 ppb steps. Added in v1.1.11; the standard series is kept alongside until this one is verified on the scanner. |
 
 Parameter `id`s must match `^[A-Za-z0-9]+$` (no underscores) -- an Open Recon schema constraint.
 

@@ -30,7 +30,8 @@
 # needed):
 #
 #   git clone https://github.com/sunhongfu/iQSM_Plus.git iQSM_Plus
-#   # ... then download iQSM_plus.pth and LoTLayer_chi.pth into iQSM_Plus/checkpoints/
+#   # ... then download iQSM_plus.pth and LoTLayer_chi.pth into iQSM_Plus/checkpoints/healthy/
+#   #     (the healthy-brain model qsm.py uses; from healthy/ on Hugging Face)
 #
 # Same one-time step for DeepRelaxo (R2* mapping, https://github.com/sunhongfu/DeepRelaxo)
 # -- its checkpoint download is a script command rather than a manual file grab:
@@ -189,8 +190,8 @@ RUN test -f "$IQSM_PLUS_DIR/inference.py" || \
 # code itself, per the header comment / readme.md's "Building the Docker image" section
 # -- so they arrived via the `COPY .` above too. Fail loudly here rather than produce an
 # image that silently builds fine and only errors at runtime (CheckpointNotFoundError).
-RUN test -f "$IQSM_PLUS_DIR/checkpoints/iQSM_plus.pth" && \
-    test -f "$IQSM_PLUS_DIR/checkpoints/LoTLayer_chi.pth" || \
+RUN test -f "$IQSM_PLUS_DIR/checkpoints/healthy/iQSM_plus.pth" && \
+    test -f "$IQSM_PLUS_DIR/checkpoints/healthy/LoTLayer_chi.pth" || \
     { echo "ERROR: iQSM_Plus checkpoints not found under $IQSM_PLUS_DIR/checkpoints -- see" \
            "readme.md's 'Building the Docker image' section (download them before building)." >&2; \
       exit 1; }

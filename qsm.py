@@ -535,6 +535,13 @@ def process_qsm(buffer, connection, config, metadata):
                          "IQSM_PLUS_DIR environment variable to a valid iQSM_Plus checkout." %
                          (IQSM_PLUS_DIR, e))
 
+    # Pinned explicitly rather than inheriting iQSM_Plus's own default, so a change to
+    # that default (it moved from the original haemorrhage-trained weights, now 'ich', to
+    # 'healthy' in iQSM_Plus 3ba25f5) can't silently switch the scanner app's model.
+    # 'healthy' was trained on healthy brains only; 'ich' suits haemorrhage or other
+    # large susceptibility sources.
+    IQSM_PLUS_MODEL = "healthy"
+
     affine = np.diag(voxel_mm + [1.0])
 
     # ------------------------------------------------------------------
@@ -562,6 +569,15 @@ def process_qsm(buffer, connection, config, metadata):
     # rather than falling back to whole-head.
     betThreshold = _get_float_ui_param(config, 'betthreshold', 0.4, 0.0, 1.0)
 
+    # Also write QSM as a phase-type series (on by default since v1.1.11). The scanner
+    # overwrites invalid edge lines (present even in non-distortion-corrected series, more
+    # of them after distortion correction) with raw 0 for magnitude-type images -- -4 ppm
+    # under the magnitude-type QSM's rescale -- but with raw 2048 (0 rad) for phase-type
+    # images, which is exactly 0 ppm in this series' encoding. The magnitude-type series is
+    # still written alongside until the phase-type one is verified on the scanner; see the
+    # QSM_PHASE_* constants below.
+    qsmPhaseCopy = _get_bool_ui_param(config, 'qsmphasecopy', True)
+
     maskPath = None
     if useMask:
         # bet2 needs a plain 3D volume, not the 4D multi-echo array -- run it on the
@@ -580,14 +596,14 @@ def process_qsm(buffer, connection, config, metadata):
     # specifically -- 100 is the series index this app has always used for QSM, and
     # existing tooling (readme.md, RunQSMRecon.ipynb) assumes it. 101/103 are whole-head.
     if useMask:
-        label, qsmSeriesIndex, r2sSeriesIndex = "masked", 100, 102
+        label, qsmSeriesIndex, r2sSeriesIndex, qsmPhaseSeriesIndex = "masked", 100, 102, 104
         qsmSeqDesc, r2sSeqDesc = "QSM_MASKED", "R2S_MASKED"
-        qsmComment = "QSM brain-extracted (ppb = ppm*1e3), iQSM+"
+        qsmComment = "QSM brain-extracted (ppb = ppm*1e3), iQSM+ %s" % IQSM_PLUS_MODEL
         r2sComment = "R2* brain-extracted (s^-1), DeepRelaxo"
     else:
-        label, qsmSeriesIndex, r2sSeriesIndex = "wholehead", 101, 103
+        label, qsmSeriesIndex, r2sSeriesIndex, qsmPhaseSeriesIndex = "wholehead", 101, 103, 105
         qsmSeqDesc, r2sSeqDesc = "QSM_WHOLEHEAD", "R2S_WHOLEHEAD"
-        qsmComment = "QSM whole-head (ppb = ppm*1e3), iQSM+"
+        qsmComment = "QSM whole-head (ppb = ppm*1e3), iQSM+ %s" % IQSM_PLUS_MODEL
         r2sComment = "R2* whole-head (s^-1), DeepRelaxo"
 
     # Written unconditionally (regardless of qsmEnabled/r2sEnabled) since R2* mapping
@@ -615,8 +631,8 @@ def process_qsm(buffer, connection, config, metadata):
                 echoPhasePath = os.path.join(debugFolder, "phase_echo%d.nii.gz" % echo)
                 echoMagPath   = os.path.join(debugFolder, "mag_echo%d.nii.gz" % echo)
 
-                logging.info("Running iQSM+ (%s) on echo %d/%d (TE=%.4f s)",
-                             label, echo + 1, nEchoes, te_sec[echo])
+                logging.info("Running iQSM+ (%s, %s model) on echo %d/%d (TE=%.4f s)",
+                             label, IQSM_PLUS_MODEL, echo + 1, nEchoes, te_sec[echo])
                 echoQsmPath = run_iqsm_plus(
                     phase_nii_path=echoPhasePath,
                     te=float(te_sec[echo]),
@@ -626,6 +642,7 @@ def process_qsm(buffer, connection, config, metadata):
                     b0_dir=b0_dir,
                     b0=b0_tesla,
                     output_dir=os.path.join(debugFolder, "%s_echo%d_output" % (label, echo)),
+                    model=IQSM_PLUS_MODEL,
                 )
                 qsmVolumes.append(nib.load(echoQsmPath).get_fdata(dtype=np.float32))
         except CheckpointNotFoundError as e:
@@ -787,12 +804,25 @@ def process_qsm(buffer, connection, config, metadata):
     r2sDicomSlope     = r2sQuantSlope
     r2sDicomIntercept = r2sQuantIntercept - R2S_PIXEL_MIN * r2sQuantSlope
 
+    # Phase-type QSM series (the 'qsmphasecopy' option). Its stored values follow the
+    # Siemens phase convention exactly -- real = 2*raw - 4096, read here as ppb -- so the
+    # displayed value is still right even if the Injector replaces our RescaleSlope/
+    # Intercept with its phase defaults (2/-4096, as seen on the pass-through phase
+    # series). That gives +/-4.094 ppm in 2 ppb steps (vs 1.954 ppb for the magnitude-type
+    # series) with 0 ppm at raw 2048, the scanner's phase fill value. Raw 0 stays reserved.
+    QSM_PHASE_DICOM_SLOPE     = 2.0     # ppb per raw step
+    QSM_PHASE_DICOM_INTERCEPT = -4096.0  # ppb at raw 0
+    QSM_PHASE_PIXEL_MIN = 1
+    qsmPhaseQuantSlope     = QSM_PHASE_DICOM_SLOPE / QSM_DICOM_UNIT_SCALE  # ppm per raw step
+    qsmPhaseQuantIntercept = (QSM_PHASE_DICOM_INTERCEPT + QSM_PHASE_PIXEL_MIN * QSM_PHASE_DICOM_SLOPE) / QSM_DICOM_UNIT_SCALE
+
     imagesOut = []
 
     def _append_dicom_series(vol, seriesIndex, seqDescAdditional, imageComments,
                               quantSlope, quantIntercept, rescaleType,
                               windowCenter, windowWidth, pixelMax, processingHistory,
-                              dicomSlope, dicomIntercept, pixelMin=0):
+                              dicomSlope, dicomIntercept, pixelMin=0,
+                              imageType=ismrmrd.IMTYPE_MAGNITUDE):
         """Quantize `vol` (in its own natural units) into uint16 using quantSlope/
         quantIntercept (defined relative to raw pixel `pixelMin`, the first non-reserved
         raw value -- see QSM_PIXEL_MIN/R2S_PIXEL_MIN above), and build one MRD image per
@@ -828,7 +858,7 @@ def process_qsm(buffer, connection, config, metadata):
 
             oldHeader = templateImg.getHead()
             oldHeader.data_type          = img.getHead().data_type
-            oldHeader.image_type         = ismrmrd.IMTYPE_MAGNITUDE
+            oldHeader.image_type         = imageType
             oldHeader.image_index        = sl + 1
             oldHeader.image_series_index = seriesIndex
             img.setHead(oldHeader)
@@ -839,7 +869,8 @@ def process_qsm(buffer, connection, config, metadata):
             # Computed/derived data, not the original acquisition -- override the
             # inherited magnitude template's ImageType (['ORIGINAL', 'PRIMARY', 'M', ...])
             # rather than passing it through unchanged.
-            tmpMeta['ImageType']                     = ['DERIVED', 'SECONDARY', 'M']
+            tmpMeta['ImageType']                     = ['DERIVED', 'SECONDARY',
+                                                        'P' if imageType == ismrmrd.IMTYPE_PHASE else 'M']
             tmpMeta['SequenceDescriptionAdditional'] = seqDescAdditional
             tmpMeta['ImageComments']                 = imageComments
             # WindowCenter/WindowWidth are in real-world (rescaled) units per DICOM
@@ -892,6 +923,18 @@ def process_qsm(buffer, connection, config, metadata):
                               pixelMax=QSM_PIXEL_MAX, pixelMin=QSM_PIXEL_MIN,
                               processingHistory=['PYTHON', 'IQSM_PLUS'],
                               dicomSlope=qsmDicomSlope, dicomIntercept=qsmDicomIntercept)
+        if qsmPhaseCopy:
+            # Own image_series_index (104/105) and SequenceDescriptionAdditional, so it
+            # lands in its own series, separate from the pass-through phase series.
+            _append_dicom_series(qsmVol, qsmPhaseSeriesIndex, seqDescAdditional + "_PHTYPE",
+                                  imageComments + ", phase-type copy",
+                                  quantSlope=qsmPhaseQuantSlope, quantIntercept=qsmPhaseQuantIntercept,
+                                  rescaleType='PPB',
+                                  windowCenter=0.0, windowWidth=1.0 * QSM_DICOM_UNIT_SCALE,
+                                  pixelMax=QSM_PIXEL_MAX, pixelMin=QSM_PHASE_PIXEL_MIN,
+                                  processingHistory=['PYTHON', 'IQSM_PLUS'],
+                                  dicomSlope=QSM_PHASE_DICOM_SLOPE, dicomIntercept=QSM_PHASE_DICOM_INTERCEPT,
+                                  imageType=ismrmrd.IMTYPE_PHASE)
 
     for label, seriesIndex, seqDescAdditional, imageComments, r2sVol in r2sResults:
         r2s_min = float(r2sVol.min())
