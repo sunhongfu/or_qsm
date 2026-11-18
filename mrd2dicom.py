@@ -74,6 +74,18 @@ def main(args):
         if not (('data' in mrdImg) and ('header' in mrdImg) and ('attributes' in mrdImg)):
             isImage = False
 
+    # Echoes (MRD `contrast`) present in each series, so multi-echo series can be split
+    # into one folder per echo below -- read from the header arrays alone, before the
+    # images themselves are loaded.
+    seriesEchoes = {}
+    if isImage:
+        for imageName in imageNames:
+            if imageName in ('xml', 'config', 'config_file'):
+                continue
+            hdr = group[imageName]['header']
+            for seriesIdx, contrast in zip(hdr['image_series_index'], hdr['contrast']):
+                seriesEchoes.setdefault(int(seriesIdx), set()).add(int(contrast))
+
     dset.close()
 
     if (isImage is False):
@@ -306,6 +318,24 @@ def main(args):
                 # (ImageJ's File > Import > Image Sequence, etc.), so echo-major naming gives
                 # one clean 3D stack per echo instead of interleaving all echoes together.
                 fileName = "%02.0f_%s_e%02.0f_%03.0f.dcm" % (dicomDset.SeriesNumber, dicomDset.SeriesDescription, mrdImg.contrast + 1, dicomDset.InstanceNumber)
+
+                # One subfolder per series (per echo, for multi-echo series, matching the
+                # scanner's one-series-per-echo export), so a viewer opening a folder gets
+                # exactly one 3D volume rather than every series of the run mixed together.
+                # The folder name also carries SequenceDescriptionAdditional (e.g. QSM_MASKED,
+                # _PHTYPE) -- the suffix the scanner appends to the series name -- because
+                # derived series inherit the acquisition's SeriesDescription and would
+                # otherwise differ only by their number.
+                suffix = meta.get('SequenceDescriptionAdditional') or ""
+                if isinstance(suffix, (list, tuple)):
+                    suffix = "_".join(str(x) for x in suffix)
+                seriesFolder = "%02.0f_%s%s" % (dicomDset.SeriesNumber, dicomDset.SeriesDescription,
+                                                ("_" + suffix.lstrip("_")) if suffix else "")
+                if len(seriesEchoes.get(int(mrdImg.image_series_index), ())) > 1:
+                    seriesFolder += "_e%02d" % (mrdImg.contrast + 1)
+                seriesFolder = re.sub(r'[^\w.+-]', '_', seriesFolder)
+                os.makedirs(os.path.join(args.out_folder, seriesFolder), exist_ok=True)
+                fileName = os.path.join(seriesFolder, fileName)
                 print("  Writing file %s" % fileName)
                 # implicit_vr/little_endian passed explicitly (matching file_meta.TransferSyntaxUID
                 # above) because save_as() still reads the deprecated is_implicit_VR/is_little_endian
