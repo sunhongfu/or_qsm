@@ -191,22 +191,30 @@ Run `docker run --rm offline-qsm-recon --help` for the authoritative list. Summa
 
 ## 7. Output format
 
-DICOM files in `--output`, one file per slice per echo per series, named
-`<series>_<protocol-name>_e<echo>_<slice>.dcm` (`mrd2dicom.py`'s convention). One
-QSM series and, if the input had ≥ 2 echoes, one R2* series — plus the original
-input magnitude/phase series passed through unmodified (so nothing from the source
-acquisition is lost).
+DICOM files in `--output`, **one subfolder per series**, and for multi-echo series (the
+passed-through originals) one subfolder per echo, as on the scanner's own export. Each
+folder therefore holds exactly one 3D volume and can be opened on its own in a viewer
+(e.g. `File > Import > Image Sequence` in ImageJ). For example:
 
-The `e<echo>` field is 1-based and always present, including on the single-echo derived
-QSM/R2* series (always `e01`). It is load-bearing, not decorative: DICOM `InstanceNumber`
-restarts at 1 for every echo, so `<series>_<name>_<slice>` alone is not unique for
-multi-echo data — without the echo field each echo overwrites the previous one and only
-the last-written survives.
+```
+output/
+  00_<protocol-name>_e01/ ... 00_<protocol-name>_e05/   original magnitude, per echo
+  01_<protocol-name>_e01/ ... 01_<protocol-name>_e05/   original phase, per echo
+  100_<protocol-name>_QSM_MASKED/                        QSM
+  102_<protocol-name>_R2S_MASKED/                        R2* (if >= 2 echoes)
+  104_<protocol-name>_QSM_MASKED_PHTYPE/                 QSM, phase-type series
+```
 
-Echo comes **before** slice so that a plain alphabetical listing groups each echo into one
-contiguous run of slices. That's the order viewers load a folder in, so
-`File > Import > Image Sequence` in ImageJ gives one clean 3D stack per echo rather than
-interleaving all echoes together.
+The folder name is `<series>_<protocol-name>` plus the series' `SequenceDescriptionAdditional`
+(the suffix the scanner appends to the series name), plus `_e<echo>` when the series has
+more than one echo. Derived series inherit the acquisition's protocol name, so without the
+suffix QSM and R2* folders would differ only by number.
+
+Inside, one file per slice, named `<series>_<protocol-name>_e<echo>_<slice>.dcm`
+(`mrd2dicom.py`'s convention). The `e<echo>` field is 1-based and always present. It
+keeps file names unique if files from several folders are ever copied together: DICOM
+`InstanceNumber` restarts at 1 for every echo, so `<series>_<name>_<slice>` alone is not
+unique for multi-echo data.
 
 | Series | Content | Units | Present when |
 |---|---|---|---|
@@ -214,6 +222,8 @@ interleaving all echoes together.
 | `101` | QSM, whole-head | ppb (`RescaleType=PPB`) | `--mode wholehead` |
 | `102` | R2*, brain-extracted | s⁻¹ (`RescaleType=R2S`) | `--mode masked` and ≥2 echoes |
 | `103` | R2*, whole-head | s⁻¹ (`RescaleType=R2S`) | `--mode wholehead` and ≥2 echoes |
+| `104` | QSM, brain-extracted, phase-type copy (`_PHTYPE`, real = 2·raw − 4096 ppb) | ppb | `--mode masked` (v1.1.11+) |
+| `105` | QSM, whole-head, phase-type copy (`_PHTYPE`) | ppb | `--mode wholehead` (v1.1.11+) |
 | *(other)* | Original input magnitude/phase, unmodified | — | always |
 
 Real-world values are recovered the standard DICOM way: `real = raw_pixel * RescaleSlope +
