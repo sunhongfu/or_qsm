@@ -88,13 +88,6 @@
       "default": false
     },
     {
-      "id": "r2shalfprecision",
-      "type": "boolean",
-      "label": { "en": "R2* Half Precision" },
-      "information": { "en": "Run DeepRelaxo's per-voxel estimator in half precision on the GPU: about twice as fast, R2* different by a median 0.01 1/s. On by default. Only relevant if Reconstruct R2* Mapping is enabled; no effect without a GPU." },
-      "default": true
-    },
-    {
       "id": "betthreshold",
       "type": "double",
       "label": { "en": "BET Threshold" },

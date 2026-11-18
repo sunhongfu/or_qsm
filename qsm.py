@@ -714,7 +714,9 @@ def process_qsm(buffer, connection, config, metadata):
             # Half precision for DeepRelaxo's per-voxel estimator (on by default since v1.1.12): about
             # twice as fast on the scanner's GPU, R2* different by a median 0.01 s^-1 (99th percentile
             # 0.08 s^-1; measured on an RTX A4500, see DeepRelaxo's README "Speed"). It has no effect
-            # on a CPU. A DeepRelaxo checkout from before that option existed ignores it.
+            # on a CPU. A DeepRelaxo checkout from before that option existed ignores it. Not a
+            # protocol-card option (qsm_json_ui.json); a config JSON can still set
+            # "r2shalfprecision": false for a full-precision run when testing with client.py.
             r2sHalf = _get_bool_ui_param(config, 'r2shalfprecision', True)
             try:
                 r2sMap, _ = estimate_r2s(magnitude_entries=magnitude_entries, te_values_ms=te_values_ms,
