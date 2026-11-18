@@ -711,12 +711,23 @@ def process_qsm(buffer, connection, config, metadata):
             te_values_ms = [t * 1000.0 for t in te_sec]
 
             r2sTic = perf_counter()
-            r2sMap, _ = estimate_r2s(magnitude_entries=magnitude_entries, te_values_ms=te_values_ms,
-                                      bet_mask_path=maskPath if useMask else None)
+            # Half precision for DeepRelaxo's per-voxel estimator (on by default since v1.1.12): about
+            # twice as fast on the scanner's GPU, R2* different by a median 0.01 s^-1 (99th percentile
+            # 0.08 s^-1; measured on an RTX A4500, see DeepRelaxo's README "Speed"). It has no effect
+            # on a CPU. A DeepRelaxo checkout from before that option existed ignores it.
+            r2sHalf = _get_bool_ui_param(config, 'r2shalfprecision', True)
+            try:
+                r2sMap, _ = estimate_r2s(magnitude_entries=magnitude_entries, te_values_ms=te_values_ms,
+                                          bet_mask_path=maskPath if useMask else None, half_precision=r2sHalf)
+            except TypeError:
+                logging.warning("This DeepRelaxo checkout has no half_precision option -- running in full precision")
+                r2sMap, _ = estimate_r2s(magnitude_entries=magnitude_entries, te_values_ms=te_values_ms,
+                                          bet_mask_path=maskPath if useMask else None)
             r2sMap = r2sMap.numpy()
             maskArr = (nib.load(maskPath).get_fdata() > 0) if useMask else np.ones(r2sMap.shape, dtype=bool)
             r2sDenoised = denoise_r2s_map(r2sMap, maskArr)
-            logging.info("DeepRelaxo (%s) completed in %.1f s", label, perf_counter() - r2sTic)
+            logging.info("DeepRelaxo (%s, %s precision) completed in %.1f s", label,
+                         "half" if r2sHalf else "full", perf_counter() - r2sTic)
             r2sResults.append((label, r2sSeriesIndex, r2sSeqDesc, r2sComment, r2sDenoised))
         except Exception:
             logging.error("R2* mapping (DeepRelaxo) failed -- continuing without R2* output:\n%s",
