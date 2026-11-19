@@ -202,7 +202,6 @@ output/
   01_<protocol-name>_e01/ ... 01_<protocol-name>_e05/   original phase, per echo
   100_<protocol-name>_QSM_MASKED/                        QSM
   102_<protocol-name>_R2S_MASKED/                        R2* (if >= 2 echoes)
-  104_<protocol-name>_QSM_MASKED_PHTYPE/                 QSM, phase-type series
 ```
 
 The folder name is `<series>_<protocol-name>` plus the series' `SequenceDescriptionAdditional`
@@ -218,12 +217,10 @@ unique for multi-echo data.
 
 | Series | Content | Units | Present when |
 |---|---|---|---|
-| `100` | QSM, brain-extracted | ppb (`RescaleType=PPB`) | `--mode masked` |
-| `101` | QSM, whole-head | ppb (`RescaleType=PPB`) | `--mode wholehead` |
+| `100` | QSM, brain-extracted, phase-type image (real = 2·raw − 4096 ppb, since v1.1.13) | ppb (`RescaleType=PPB`) | `--mode masked` |
+| `101` | QSM, whole-head, phase-type image (as `100`) | ppb (`RescaleType=PPB`) | `--mode wholehead` |
 | `102` | R2*, brain-extracted | s⁻¹ (`RescaleType=R2S`) | `--mode masked` and ≥2 echoes |
 | `103` | R2*, whole-head | s⁻¹ (`RescaleType=R2S`) | `--mode wholehead` and ≥2 echoes |
-| `104` | QSM, brain-extracted, phase-type copy (`_PHTYPE`, real = 2·raw − 4096 ppb) | ppb | `--mode masked` (v1.1.11+) |
-| `105` | QSM, whole-head, phase-type copy (`_PHTYPE`) | ppb | `--mode wholehead` (v1.1.11+) |
 | *(other)* | Original input magnitude/phase, unmodified | — | always |
 
 Real-world values are recovered the standard DICOM way: `real = raw_pixel * RescaleSlope +

@@ -1,17 +1,17 @@
 {
   "general": {
     "name": { "en": "iQSM_Plus" },
-    "version": "1.1.12",
+    "version": "1.1.13",
     "vendor": "HMRI Imaging Centre",
     "information": { "en": "Deep-learning QSM (iQSM+) and R2* (DeepRelaxo) reconstruction from multi-echo GRE magnitude/phase images." },
     "id": "iQSMPlus",
     "regulatory_information": {
       "device_trade_name": "iQSM_Plus",
-      "production_identifier": "1.1.12",
+      "production_identifier": "1.1.13",
       "manufacturer_address": "Kookaburra Circuit Lot 1, New Lambton Heights, NSW, AU, 2305",
       "made_in": "AU",
-      "manufacture_date": "2026/11/18",
-      "material_number": "iQSM_Plus_1.1.12",
+      "manufacture_date": "2026/11/19",
+      "material_number": "iQSM_Plus_1.1.13",
       "gtin": "00000000000000",
       "udi": "(00)00000000000000(00)1.0.0",
       "safety_advices": "Research use only. Not for diagnostic use.",
@@ -95,13 +95,6 @@
       "minimum": 0.0,
       "maximum": 1.0,
       "default": 0.4
-    },
-    {
-      "id": "qsmphasecopy",
-      "type": "boolean",
-      "label": { "en": "QSM Phase-type Series" },
-      "information": { "en": "Also write QSM as a separate phase-type series (sequence description suffix _PHTYPE). The scanner fills invalid edge pixels (e.g. after distortion correction) of phase-type images with 0 ppm, instead of -4 ppm in the standard QSM series. Values are in ppb (real = 2*raw - 4096), range +/-4.094 ppm in 2 ppb steps. On by default." },
-      "default": true
     }
   ]
 }

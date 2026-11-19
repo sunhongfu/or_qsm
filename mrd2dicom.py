@@ -323,7 +323,7 @@ def main(args):
                 # scanner's one-series-per-echo export), so a viewer opening a folder gets
                 # exactly one 3D volume rather than every series of the run mixed together.
                 # The folder name also carries SequenceDescriptionAdditional (e.g. QSM_MASKED,
-                # _PHTYPE) -- the suffix the scanner appends to the series name -- because
+                # R2S_MASKED) -- the suffix the scanner appends to the series name -- because
                 # derived series inherit the acquisition's SeriesDescription and would
                 # otherwise differ only by their number.
                 suffix = meta.get('SequenceDescriptionAdditional') or ""

@@ -569,15 +569,6 @@ def process_qsm(buffer, connection, config, metadata):
     # rather than falling back to whole-head.
     betThreshold = _get_float_ui_param(config, 'betthreshold', 0.4, 0.0, 1.0)
 
-    # Also write QSM as a phase-type series (on by default since v1.1.11). The scanner
-    # overwrites invalid edge lines (present even in non-distortion-corrected series, more
-    # of them after distortion correction) with raw 0 for magnitude-type images -- -4 ppm
-    # under the magnitude-type QSM's rescale -- but with raw 2048 (0 rad) for phase-type
-    # images, which is exactly 0 ppm in this series' encoding. The magnitude-type series is
-    # still written alongside until the phase-type one is verified on the scanner; see the
-    # QSM_PHASE_* constants below.
-    qsmPhaseCopy = _get_bool_ui_param(config, 'qsmphasecopy', True)
-
     maskPath = None
     if useMask:
         # bet2 needs a plain 3D volume, not the 4D multi-echo array -- run it on the
@@ -596,12 +587,12 @@ def process_qsm(buffer, connection, config, metadata):
     # specifically -- 100 is the series index this app has always used for QSM, and
     # existing tooling (readme.md, RunQSMRecon.ipynb) assumes it. 101/103 are whole-head.
     if useMask:
-        label, qsmSeriesIndex, r2sSeriesIndex, qsmPhaseSeriesIndex = "masked", 100, 102, 104
+        label, qsmSeriesIndex, r2sSeriesIndex = "masked", 100, 102
         qsmSeqDesc, r2sSeqDesc = "QSM_MASKED", "R2S_MASKED"
         qsmComment = "QSM brain-extracted (ppb = ppm*1e3), iQSM+ %s" % IQSM_PLUS_MODEL
         r2sComment = "R2* brain-extracted (s^-1), DeepRelaxo"
     else:
-        label, qsmSeriesIndex, r2sSeriesIndex, qsmPhaseSeriesIndex = "wholehead", 101, 103, 105
+        label, qsmSeriesIndex, r2sSeriesIndex = "wholehead", 101, 103
         qsmSeqDesc, r2sSeqDesc = "QSM_WHOLEHEAD", "R2S_WHOLEHEAD"
         qsmComment = "QSM whole-head (ppb = ppm*1e3), iQSM+ %s" % IQSM_PLUS_MODEL
         r2sComment = "R2* whole-head (s^-1), DeepRelaxo"
@@ -761,46 +752,40 @@ def process_qsm(buffer, connection, config, metadata):
     # the image to exactly RescaleIntercept on real hardware). Quantizing into 0..4095 up
     # front means the values already fit inside whatever the Injector actually preserves.
     # ------------------------------------------------------------------
-    QSM_DISPLAY_RANGE_PPM = 4.0  # clip/quantize over [-4, +4] ppm
     QSM_PIXEL_MAX = 4095
-    # Raw pixel 0 is reserved and never produced by our own quantization below -- real
-    # scanner DICOMs (mag, phase, and QSM/R2* alike, live and offline) have been observed
-    # to have their outermost border/gap pixels filled with literal raw 0, regardless of
-    # what that value maps to for that particular series' own RescaleSlope/Intercept. This
-    # is harmless for series whose own zero-point already sits at raw 0 (magnitude, R2*)
-    # but previously landed QSM's border on this range's -4ppm floor, displaying as an
-    # alarming, physiologically-implausible "-4000" ppb. Reserving raw 0 here (never
-    # legitimate QSM data) and marking it via PixelPaddingValue below means a compliant
-    # DICOM viewer treats it as non-data instead of a fabricated extreme value.
+    # Raw pixel 0 is reserved and never produced by our own quantization below, and is
+    # marked via PixelPaddingValue (which mrd2dicom.py honors offline; the scanner's
+    # Injector drops the tag).
     QSM_PIXEL_MIN = 1
-    qsmQuantSlope     = (2.0 * QSM_DISPLAY_RANGE_PPM) / (QSM_PIXEL_MAX - QSM_PIXEL_MIN)
-    qsmQuantIntercept = -QSM_DISPLAY_RANGE_PPM  # real value at raw == QSM_PIXEL_MIN
 
-    # The DICOM-facing RescaleSlope/Intercept (and WindowCenter/Width) report values in
-    # ppb (ppm * 1000) rather than ppm directly: a scanner's window/level tool has been
-    # observed to have coarse (effectively integer-only) granularity in whatever
-    # real-world unit RescaleSlope/Intercept report, so a genuine ppm-scale window (e.g.
-    # WindowWidth=1) only has a handful of distinct adjustable positions across the whole
-    # clinically-relevant range -- nowhere near enough for usable mouse-based adjustment
-    # (compare magnitude images, whose real-world W/L values are naturally in the
-    # hundreds-to-thousands, since RescaleSlope~1 there). This changes nothing about the
-    # underlying pixel data or the true value any voxel represents, only the *units* a
-    # DICOM viewer reports/adjusts it in -- RescaleType is set to PPB so anything that
-    # respects it knows the units changed.
+    # QSM is sent as a *phase-type* image (IMTYPE_PHASE), stored in the Siemens phase
+    # convention exactly: real = 2*raw - 4096, read here as ppb. The scanner overwrites
+    # invalid edge lines of every returned image (present even without distortion
+    # correction, more of them with it) with raw 0 for magnitude-type images but raw 2048
+    # for phase-type ones, and 2048 is exactly 0 ppm in this encoding. A magnitude-type QSM
+    # series (raw 0 = -4 ppm, so the edge displayed as an alarming -4000 ppb) was written
+    # up to v1.1.10, both were written in v1.1.11-1.1.12 while the phase-type one was
+    # verified on the scanner, and only the phase-type one remains since v1.1.13. Using the
+    # Siemens slope/intercept also means the displayed value is right even if the Injector
+    # replaces our RescaleSlope/Intercept with its phase defaults (2/-4096, as seen on the
+    # pass-through phase series).
     #
-    # This is why QSM's DICOM tags (dicomSlope/dicomIntercept below) differ from what it
-    # quantizes with (qsmQuantSlope/qsmQuantIntercept above) -- _append_dicom_series keeps
-    # these as two explicit, separately-named parameter pairs specifically so they can
-    # never be silently conflated: the pixel data is always quantized in the volume's own
-    # native units, and the DICOM tags separately declare whatever units should be
-    # reported, which a compliant viewer combines correctly regardless of the difference.
-    QSM_DICOM_UNIT_SCALE = 1000.0  # ppm -> ppb, tags only
-    qsmDicomSlope     = qsmQuantSlope * QSM_DICOM_UNIT_SCALE
-    # DICOM's RescaleIntercept is defined relative to raw pixel 0 (real = raw*slope +
-    # intercept, no separate offset term), but qsmQuantIntercept above is defined relative
-    # to QSM_PIXEL_MIN (the first non-reserved raw value) -- translate between the two here
-    # rather than letting the offset get silently dropped.
-    qsmDicomIntercept = (qsmQuantIntercept - QSM_PIXEL_MIN * qsmQuantSlope) * QSM_DICOM_UNIT_SCALE
+    # The DICOM-facing values are in ppb (ppm * 1000) rather than ppm: a scanner's
+    # window/level tool has effectively integer-only granularity in whatever real-world
+    # unit RescaleSlope/Intercept report, so a ppm-scale window (e.g. WindowWidth=1) would
+    # have only a handful of adjustable positions. RescaleType is set to PPB.
+    #
+    # _append_dicom_series takes the quantization pair (in the volume's own units, ppm,
+    # relative to raw == pixelMin) and the DICOM tag pair (ppb, relative to raw 0 per DICOM
+    # convention) as separately-named parameters so the two can never be silently
+    # conflated. Range: +/-4.094 ppm in 2 ppb steps.
+    QSM_DICOM_UNIT_SCALE = 1000.0  # ppm -> ppb
+    QSM_DICOM_SLOPE      = 2.0      # ppb per raw step
+    QSM_DICOM_INTERCEPT  = -4096.0  # ppb at raw 0
+    qsmQuantSlope     = QSM_DICOM_SLOPE / QSM_DICOM_UNIT_SCALE  # ppm per raw step
+    qsmQuantIntercept = (QSM_DICOM_INTERCEPT + QSM_PIXEL_MIN * QSM_DICOM_SLOPE) / QSM_DICOM_UNIT_SCALE  # ppm at raw == QSM_PIXEL_MIN
+    qsmRangeMinPpm    = qsmQuantIntercept
+    qsmRangeMaxPpm    = (QSM_DICOM_INTERCEPT + QSM_PIXEL_MAX * QSM_DICOM_SLOPE) / QSM_DICOM_UNIT_SCALE
 
     # R2* is non-negative and naturally spans tens-to-~100+ s^-1 in brain tissue, unlike
     # QSM's tiny +/-4ppm range, so no unit-inflation trick is needed for a scanner W/L tool
@@ -816,18 +801,6 @@ def process_qsm(buffer, connection, config, metadata):
     r2sQuantIntercept = 0.0  # real value at raw == R2S_PIXEL_MIN
     r2sDicomSlope     = r2sQuantSlope
     r2sDicomIntercept = r2sQuantIntercept - R2S_PIXEL_MIN * r2sQuantSlope
-
-    # Phase-type QSM series (the 'qsmphasecopy' option). Its stored values follow the
-    # Siemens phase convention exactly -- real = 2*raw - 4096, read here as ppb -- so the
-    # displayed value is still right even if the Injector replaces our RescaleSlope/
-    # Intercept with its phase defaults (2/-4096, as seen on the pass-through phase
-    # series). That gives +/-4.094 ppm in 2 ppb steps (vs 1.954 ppb for the magnitude-type
-    # series) with 0 ppm at raw 2048, the scanner's phase fill value. Raw 0 stays reserved.
-    QSM_PHASE_DICOM_SLOPE     = 2.0     # ppb per raw step
-    QSM_PHASE_DICOM_INTERCEPT = -4096.0  # ppb at raw 0
-    QSM_PHASE_PIXEL_MIN = 1
-    qsmPhaseQuantSlope     = QSM_PHASE_DICOM_SLOPE / QSM_DICOM_UNIT_SCALE  # ppm per raw step
-    qsmPhaseQuantIntercept = (QSM_PHASE_DICOM_INTERCEPT + QSM_PHASE_PIXEL_MIN * QSM_PHASE_DICOM_SLOPE) / QSM_DICOM_UNIT_SCALE
 
     imagesOut = []
 
@@ -922,32 +895,21 @@ def process_qsm(buffer, connection, config, metadata):
     for label, seriesIndex, seqDescAdditional, imageComments, qsmVol in qsmResults:
         chi_min = float(qsmVol.min())
         chi_max = float(qsmVol.max())
-        n_clipped = int(np.sum((qsmVol < -QSM_DISPLAY_RANGE_PPM) | (qsmVol > QSM_DISPLAY_RANGE_PPM)))
+        n_clipped = int(np.sum((qsmVol < qsmRangeMinPpm) | (qsmVol > qsmRangeMaxPpm)))
         if n_clipped > 0:
-            logging.warning("(%s) %d of %d voxels fell outside +/-%.1f ppm and were clipped",
-                             label, n_clipped, qsmVol.size, QSM_DISPLAY_RANGE_PPM)
+            logging.warning("(%s) %d of %d voxels fell outside [%.3f, %.3f] ppm and were clipped",
+                             label, n_clipped, qsmVol.size, qsmRangeMinPpm, qsmRangeMaxPpm)
         logging.info("(%s) QSM value range [%.4f, %.4f] ppm -> quantized to uint16 over fixed "
-                     "[-%.1f, %.1f] ppm (RescaleSlope=%.8g, RescaleIntercept=%.4f)",
-                     label, chi_min, chi_max, QSM_DISPLAY_RANGE_PPM, QSM_DISPLAY_RANGE_PPM,
-                     qsmQuantSlope, qsmQuantIntercept)
+                     "[%.3f, %.3f] ppm, phase-type image (RescaleSlope=%.8g, RescaleIntercept=%.4f ppb)",
+                     label, chi_min, chi_max, qsmRangeMinPpm, qsmRangeMaxPpm,
+                     QSM_DICOM_SLOPE, QSM_DICOM_INTERCEPT)
         _append_dicom_series(qsmVol, seriesIndex, seqDescAdditional, imageComments,
                               quantSlope=qsmQuantSlope, quantIntercept=qsmQuantIntercept, rescaleType='PPB',
                               windowCenter=0.0, windowWidth=1.0 * QSM_DICOM_UNIT_SCALE,
                               pixelMax=QSM_PIXEL_MAX, pixelMin=QSM_PIXEL_MIN,
                               processingHistory=['PYTHON', 'IQSM_PLUS'],
-                              dicomSlope=qsmDicomSlope, dicomIntercept=qsmDicomIntercept)
-        if qsmPhaseCopy:
-            # Own image_series_index (104/105) and SequenceDescriptionAdditional, so it
-            # lands in its own series, separate from the pass-through phase series.
-            _append_dicom_series(qsmVol, qsmPhaseSeriesIndex, seqDescAdditional + "_PHTYPE",
-                                  imageComments + ", phase-type copy",
-                                  quantSlope=qsmPhaseQuantSlope, quantIntercept=qsmPhaseQuantIntercept,
-                                  rescaleType='PPB',
-                                  windowCenter=0.0, windowWidth=1.0 * QSM_DICOM_UNIT_SCALE,
-                                  pixelMax=QSM_PIXEL_MAX, pixelMin=QSM_PHASE_PIXEL_MIN,
-                                  processingHistory=['PYTHON', 'IQSM_PLUS'],
-                                  dicomSlope=QSM_PHASE_DICOM_SLOPE, dicomIntercept=QSM_PHASE_DICOM_INTERCEPT,
-                                  imageType=ismrmrd.IMTYPE_PHASE)
+                              dicomSlope=QSM_DICOM_SLOPE, dicomIntercept=QSM_DICOM_INTERCEPT,
+                              imageType=ismrmrd.IMTYPE_PHASE)
 
     for label, seriesIndex, seqDescAdditional, imageComments, r2sVol in r2sResults:
         r2s_min = float(r2sVol.min())
